@@ -7,9 +7,46 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
+DATAFRAME_COLUMNS = [
+    "id",
+    "xc",
+    "yc",
+    "zc",
+    "area",
+    "perimeter",
+    "euler_alpha",
+    "euler_beta",
+    "euler_gamma",
+    "curv_mean",
+    "curv_gauss",
+    "curv_k1",
+    "curv_k2",
+    "ellipse_xc",
+    "ellipse_yc",
+    "ellipse_zc",
+    "ellipse_a",
+    "ellipse_b",
+    "ellipse_theta",
+    "eccentricity",
+    "proj_direction",
+    "uncorrected_area",
+    "uncorrected_perimeter",
+    "n_neighbors",
+    "area_error",
+    "perimeter_error",
+]
+
 
 @dataclass
 class Epicell:
+    """Measurements and geometry for one deprojected epithelial cell.
+
+    ``boundary`` has shape ``(n, 3)`` and ``center`` has shape ``(3,)`` in
+    geometric ``(x, y, z)`` order. Coordinates, lengths, and areas use the
+    parent result's physical units, except angles (radians), eccentricity, and
+    neighbor counts.
+    """
+
     id: int
     boundary: np.ndarray
     center: np.ndarray
@@ -27,8 +64,17 @@ class Epicell:
     area_error: float
     perimeter_error: float
 
+
 @dataclass
 class DeprojResult:
+    """Collection returned by :func:`deprojpy.from_heightmap`.
+
+    The source image shape is stored in array ``(row, column)`` order, while
+    all cell boundaries, centers, and junction centroids are geometric
+    ``(x, y, z)`` coordinates. ``pixel_size`` and ``voxel_depth`` record the
+    conversions used to express those coordinates in ``units``.
+    """
+
     epicells: list[Epicell]
     junction_graph: nx.Graph
     units: str = "pixels"
@@ -42,6 +88,12 @@ class DeprojResult:
         return self.epicells
 
     def to_dataframe(self) -> pd.DataFrame:
+        """Return one row per cell using the stable morphology column schema.
+
+        Position, length, and area columns use this result's physical
+        ``units``; Euler/orientation columns are radians and curvature columns
+        use inverse physical units. An empty result still returns all columns.
+        """
         rows = []
         for cell in self.epicells:
             rows.append(
@@ -74,9 +126,14 @@ class DeprojResult:
                     "perimeter_error": cell.perimeter_error,
                 }
             )
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows, columns=DATAFRAME_COLUMNS)
 
     def to_csv(self, path: str | Path, **kwargs: object) -> None:
+        """Write :meth:`to_dataframe` to CSV.
+
+        ``path`` may be a string or :class:`pathlib.Path`. Additional keyword
+        arguments are forwarded to :meth:`pandas.DataFrame.to_csv`; ``index``
+        defaults to ``False``.
+        """
         kwargs.setdefault("index", False)
         self.to_dataframe().to_csv(path, **kwargs)
-

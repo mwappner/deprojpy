@@ -3,12 +3,42 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+
 from .core import from_heightmap
+from .diagnostics import (
+    plot_3d_boundaries,
+    plot_feature_histograms,
+    plot_feature_map,
+    plot_heightmap_with_centers,
+    plot_mask_objects,
+)
 from .io import load_tiff_pair
 
 
+def _save_diagnostics(directory: Path, mask, heightmap, result, frame) -> list[Path]:
+    directory.mkdir(parents=True, exist_ok=True)
+    plots = {
+        "mask_objects.png": lambda: plot_mask_objects(mask, result),
+        "heightmap_centers.png": lambda: plot_heightmap_with_centers(heightmap, result),
+        "area_map.png": lambda: plot_feature_map(result, "area"),
+        "feature_histograms.png": lambda: plot_feature_histograms(frame),
+        "boundaries_3d.png": lambda: plot_3d_boundaries(result, "area"),
+    }
+    written = []
+    for filename, make_plot in plots.items():
+        figure, _ = make_plot()
+        path = directory / filename
+        figure.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(figure)
+        written.append(path)
+    return written
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run a DeProj sample smoke test")
+    parser = argparse.ArgumentParser(
+        description="Run DeProj-compatible mask and height-map analysis"
+    )
     parser.add_argument("mask")
     parser.add_argument("heightmap")
     parser.add_argument("--csv", type=Path)
@@ -16,6 +46,12 @@ def main() -> None:
     parser.add_argument("--voxel-depth", type=float, default=1.0)
     parser.add_argument("--units", default="µm")
     parser.add_argument("--invert-z", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--diagnostics",
+        type=Path,
+        metavar="DIR",
+        help="save diagnostic PNG files in DIR",
+    )
     args = parser.parse_args()
     mask, heightmap = load_tiff_pair(args.mask, args.heightmap)
     result = from_heightmap(
@@ -27,15 +63,29 @@ def main() -> None:
         invert_z=args.invert_z,
     )
     frame = result.to_dataframe()
+    print(f"Input shape: {mask.shape}")
+    print(f"Retained cells: {len(result.epicells)}")
     print(
-        f"shape={mask.shape}, cells={len(result.epicells)}, "
-        f"junction_nodes={result.junction_graph.number_of_nodes()}, "
-        f"junction_edges={result.junction_graph.number_of_edges()}"
+        "Junction graph: "
+        f"{result.junction_graph.number_of_nodes()} nodes, "
+        f"{result.junction_graph.number_of_edges()} edges"
     )
-    print(frame[["area", "perimeter", "n_neighbors"]].describe())
+    print(f"DataFrame shape: {frame.shape}")
+    summary_columns = ["area", "perimeter", "eccentricity", "n_neighbors"]
+    print(frame[summary_columns].describe().to_string())
+    print("Missing key values:")
+    for column in summary_columns:
+        missing = int(frame[column].isna().sum())
+        fraction = missing / len(frame) if len(frame) else 0.0
+        print(f"  {column}: {missing}/{len(frame)} ({fraction:.1%})")
     if args.csv:
+        args.csv.parent.mkdir(parents=True, exist_ok=True)
         result.to_csv(args.csv)
-        print(f"Wrote {args.csv}")
+        print(f"Wrote CSV: {args.csv}")
+    if args.diagnostics:
+        paths = _save_diagnostics(args.diagnostics, mask, heightmap, result, frame)
+        for path in paths:
+            print(f"Wrote diagnostic: {path}")
 
 
 if __name__ == "__main__":

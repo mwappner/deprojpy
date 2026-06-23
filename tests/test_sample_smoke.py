@@ -1,7 +1,5 @@
-from pathlib import Path
-
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
 import deprojpy as dp
 from deprojpy.diagnostics import (
@@ -13,12 +11,10 @@ from deprojpy.diagnostics import (
 )
 
 
-SAMPLES = Path(__file__).parents[2] / "DeProj-matlab" / "samples"
-
-
-def test_sample_end_to_end():
+def test_sample_end_to_end(matlab_samples):
     mask, heightmap = dp.load_tiff_pair(
-        SAMPLES / "Segmentation-2.tif", SAMPLES / "HeightMap-2.tif"
+        matlab_samples / "Segmentation-2.tif",
+        matlab_samples / "HeightMap-2.tif",
     )
     result = dp.from_heightmap(
         mask,
@@ -34,7 +30,14 @@ def test_sample_end_to_end():
     assert mask.shape == (282, 508)
     assert len(result.epicells) == 426
     assert len(frame) == 426
-    assert {"id", "area", "perimeter", "curv_mean", "ellipse_a", "n_neighbors"} <= set(frame)
+    assert {
+        "id",
+        "area",
+        "perimeter",
+        "curv_mean",
+        "ellipse_a",
+        "n_neighbors",
+    } <= set(frame)
     assert np.isfinite(frame["area"]).all() and (frame["area"] > 0).all()
     assert np.isfinite(frame["perimeter"]).all() and (frame["perimeter"] > 0).all()
     plotters = [

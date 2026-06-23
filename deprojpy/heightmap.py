@@ -27,9 +27,24 @@ def prepare_heightmap(
     scaling, as in the MATLAB workflow.
     """
     h = np.asarray(heightmap, dtype=float).copy()
+    if h.ndim != 2:
+        raise ValueError(f"heightmap must be a 2-D array; received shape {h.shape}")
+    if h.size == 0:
+        raise ValueError("heightmap must not be empty")
+    if not np.isfinite(voxel_depth) or voxel_depth <= 0:
+        raise ValueError("voxel_depth must be a positive finite number")
+    if not np.any(np.isfinite(h)):
+        raise ValueError("heightmap must contain at least one finite value")
     zero_mask = h == 0
     if inpaint_zeros and zero_mask.any():
-        h = inpaint.inpaint_biharmonic(h, zero_mask, channel_axis=None)
+        if zero_mask.all():
+            if prune_zeros:
+                raise ValueError(
+                    "heightmap contains only zeros, so no finite surface remains "
+                    "after zero pruning"
+                )
+        else:
+            h = inpaint.inpaint_biharmonic(h, zero_mask, channel_axis=None)
     if prune_zeros:
         h[h == 0] = np.nan
     if smooth_scale > 0:
@@ -38,7 +53,13 @@ def prepare_heightmap(
         finite = h[np.isfinite(h)]
         if finite.size:
             h = finite.max() - h
-    return h * float(voxel_depth)
+    h *= float(voxel_depth)
+    if not np.any(np.isfinite(h)):
+        raise ValueError(
+            "heightmap contains no finite values after preprocessing; check zero "
+            "handling and the input image"
+        )
+    return h
 
 
 def get_z(points_xy: np.ndarray, heightmap: np.ndarray, pixel_size: float) -> np.ndarray:
@@ -66,12 +87,7 @@ def compute_curvatures(
     hyy, _ = np.gradient(hy, pixel_size, pixel_size)
     norm = 1.0 + hx * hx + hy * hy
     gaussian = (hxx * hyy - hxy * hxy) / (norm * norm)
-    mean = (
-        (1.0 + hx * hx) * hyy
-        + (1.0 + hy * hy) * hxx
-        - 2.0 * hx * hy * hxy
-    ) / (2.0 * norm**1.5)
+    mean = ((1.0 + hx * hx) * hyy + (1.0 + hy * hy) * hxx - 2.0 * hx * hy * hxy) / (2.0 * norm**1.5)
     discriminant = np.maximum(mean * mean - gaussian, 0.0)
     root = np.sqrt(discriminant)
     return mean, gaussian, mean + root, mean - root
-

@@ -15,6 +15,24 @@ class MaskObject:
     junction_ids: np.ndarray
 
 
+def validate_binary_mask(mask: np.ndarray) -> np.ndarray:
+    """Validate and return a two-dimensional black-ridge/white-cell mask."""
+    image = np.asarray(mask)
+    if image.ndim != 2:
+        raise ValueError(f"mask must be a 2-D array; received shape {image.shape}")
+    if image.size == 0:
+        raise ValueError("mask must not be empty")
+    if not np.all(np.isfinite(image)):
+        raise ValueError("mask must contain only finite values")
+    values = np.unique(image)
+    if len(values) != 2 or 0 not in values:
+        raise ValueError(
+            "mask must be binary-like with exactly two values: black ridges "
+            "(0) and nonzero cell interiors"
+        )
+    return image
+
+
 def _ordered_boundary(component: np.ndarray) -> np.ndarray:
     """Return an ordered boundary as integer (x, y) pixel-center coordinates."""
     contours = measure.find_contours(component, 0.5, fully_connected="high")
@@ -46,9 +64,7 @@ def mask_to_objects(mask: np.ndarray) -> tuple[list[MaskObject], nx.Graph]:
     Input array indices are ``(row, column)``; all returned coordinates are
     geometric ``(x, y)`` pixel coordinates, with the first pixel at (0, 0).
     """
-    image = np.asarray(mask)
-    if image.ndim != 2:
-        raise ValueError("mask must be a 2-D image")
+    image = validate_binary_mask(mask)
     white = image != 0
     labels, n_components = ndi.label(white, ndi.generate_binary_structure(2, 1))
 
@@ -57,12 +73,8 @@ def mask_to_objects(mask: np.ndarray) -> tuple[list[MaskObject], nx.Graph]:
         ridge.astype(np.uint8), np.ones((3, 3), dtype=np.uint8), mode="constant"
     )
     junction_mask = ridge & (ridge_neighbors >= 4)
-    junction_labels, n_junctions = ndi.label(
-        junction_mask, ndi.generate_binary_structure(2, 2)
-    )
-    centers_rc = ndi.center_of_mass(
-        junction_mask, junction_labels, range(1, n_junctions + 1)
-    )
+    junction_labels, n_junctions = ndi.label(junction_mask, ndi.generate_binary_structure(2, 2))
+    centers_rc = ndi.center_of_mass(junction_mask, junction_labels, range(1, n_junctions + 1))
 
     graph = nx.Graph()
     for junction_id, (row, col) in enumerate(centers_rc, start=1):
@@ -98,10 +110,14 @@ def mask_to_objects(mask: np.ndarray) -> tuple[list[MaskObject], nx.Graph]:
                 sequence.append(jid)
         if len(sequence) > 1 and sequence[0] == sequence[-1]:
             sequence.pop()
-        for first, second in zip(sequence, sequence[1:] + sequence[:1]):
+        for first, second in zip(sequence, sequence[1:] + sequence[:1], strict=True):
             if first != second:
                 graph.add_edge(first, second)
 
         objects.append(MaskObject(boundary, boundary.mean(axis=0), junction_ids))
+    if not objects:
+        raise ValueError(
+            "mask parsing found no retained cells; expected nonzero cell interiors "
+            "separated by a connected black ridge, with cells away from image borders"
+        )
     return objects, graph
-

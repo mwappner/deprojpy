@@ -26,4 +26,3 @@ def test_tilted_plane_curvature_is_zero():
     fields = compute_curvatures(2 * x + 3 * y, object_scale=None)
     for field in fields:
         assert np.allclose(field, 0, atol=1e-12)
-

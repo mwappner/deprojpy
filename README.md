@@ -1,34 +1,39 @@
 # deprojpy
 
-`deprojpy` is a small behavioral Python port of the computational
-`deproj.from_heightmap` workflow from the MATLAB DeProj project. It converts a
-black-ridge/white-cell mask into cell polygons and a junction graph, maps the
-polygons onto a height map, and exports corrected morphology measurements.
+`deprojpy` is a behavioral Python port of the MATLAB DeProj
+`deproj.from_heightmap` workflow. It parses a segmented epithelial-cell mask,
+maps cell contours onto a height-map surface, computes corrected morphology,
+and exports the measurements.
 
-This first milestone is validated with synthetic geometry tests and the
-repository sample. It is not yet a certified numerical clone of MATLAB DeProj.
+This package is validated with synthetic invariants and the original DeProj
+sample images. It is not yet certified against MATLAB golden outputs.
 
-## Install and run
+## Installation
+
+From a local checkout:
 
 ```bash
-cd DeProj-python
 python -m pip install -e '.[test]'
-pytest
-
-deprojpy-smoke \
-  ../DeProj-matlab/samples/Segmentation-2.tif \
-  ../DeProj-matlab/samples/HeightMap-2.tif \
-  --csv measurements.csv
+python -m pytest
+python -m compileall deprojpy
 ```
 
-Or from Python:
+The test suite finds optional MATLAB samples through
+`DEPROJ_MATLAB_SAMPLES`, common sibling checkout paths, or `./samples`.
+Sample-dependent tests skip clearly when those files are unavailable.
+
+## Python usage
 
 ```python
 import deprojpy as dp
 
-mask, heightmap = dp.load_tiff_pair("Segmentation-2.tif", "HeightMap-2.tif")
+mask, heightmap = dp.load_tiff_pair(
+    "Segmentation-2.tif",
+    "HeightMap-2.tif",
+)
 result = dp.from_heightmap(
-    mask, heightmap,
+    mask,
+    heightmap,
     pixel_size=0.183,
     voxel_depth=1.0,
     units="µm",
@@ -36,14 +41,45 @@ result = dp.from_heightmap(
     inpaint_zeros=True,
     prune_zeros=True,
 )
+
 df = result.to_dataframe()
+result.to_csv("measurements.csv")
 ```
 
-Coordinates returned by the package are explicit `(x, y, z)` values. XY uses
-zero-based pixel centers before physical scaling. Zeros in the height map are
-optionally filled with biharmonic interpolation; any remaining zero/NaN cells
-are pruned.
+Input arrays use image indexing `(row, column)`. Returned boundaries, centers,
+and junction centroids use geometric `(x, y, z)` order in the selected physical
+units.
 
-The sample has 426 retained cells and 920 actual junction nodes. The original
-README reports 1840 because MATLAB's `numel(junction_graph.Nodes)` counts both
-columns of its 920-by-2 node table.
+The segmentation must be a binary-like image with black/zero connected ridges
+and one nonzero value for cell interiors. The height map must be a 2-D image of
+the same shape whose values encode the tissue's Z position.
+
+## Command line
+
+```bash
+deprojpy-smoke \
+  ../DeProj-matlab/samples/Segmentation-2.tif \
+  ../DeProj-matlab/samples/HeightMap-2.tif \
+  --pixel-size 0.183 \
+  --voxel-depth 1.0 \
+  --units µm \
+  --invert-z \
+  --csv measurements.csv
+```
+
+Add `--diagnostics diagnostics/` to save mask, height-map, feature-map,
+histogram, and 3-D-boundary PNGs.
+
+## Validation status
+
+With the original sample files, the expected result is:
+
+- image shape `(282, 508)`;
+- 426 retained cells;
+- 920 actual junction graph nodes;
+- finite positive cell areas and perimeters.
+
+The original MATLAB README prints 1,840 junctions because MATLAB `numel`
+counts both columns of its 920-by-2 node table. Numerical parity with MATLAB
+ellipse fits and other measurements remains to be checked against future
+golden outputs.

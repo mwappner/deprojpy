@@ -14,4 +14,3 @@ __all__ = [
     "load_tiff_pair",
     "prepare_heightmap",
 ]
-

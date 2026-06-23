@@ -73,4 +73,3 @@ def fit_ellipse_3d(boundary: np.ndarray, rotation: np.ndarray) -> tuple[np.ndarr
     except np.linalg.LinAlgError:
         warnings.warn("ellipse fit failed", RuntimeWarning, stacklevel=2)
         return np.full(6, np.nan), np.nan, np.nan
-

@@ -18,13 +18,35 @@ def from_heightmap(
     inpaint_zeros: bool = True,
     prune_zeros: bool = True,
 ) -> DeprojResult:
-    """Run the behavioral Python port of DeProj's ``from_heightmap``."""
+    """Deproject segmented cell contours onto a height-map surface.
+
+    ``mask`` and ``heightmap`` are two-dimensional arrays indexed as
+    ``(row, column)``. The mask must contain black/zero ridges and one nonzero
+    value for cell interiors. ``pixel_size`` converts X/Y pixel coordinates
+    and ``voxel_depth`` converts height-map values into the requested physical
+    ``units``. Returned centers, boundaries, and graph centroids use geometric
+    ``(x, y, z)`` order.
+
+    The result contains one :class:`~deprojpy.models.Epicell` per retained cell,
+    an undirected junction graph, processing metadata, and DataFrame/CSV export
+    helpers.
+    """
     mask = np.asarray(mask)
     heightmap = np.asarray(heightmap)
-    if mask.shape != heightmap.shape or mask.ndim != 2:
-        raise ValueError("mask and heightmap must be 2-D arrays with identical shapes")
-    if pixel_size <= 0 or voxel_depth <= 0:
-        raise ValueError("pixel_size and voxel_depth must be positive")
+    if mask.ndim != 2 or heightmap.ndim != 2:
+        raise ValueError(
+            "mask and heightmap must both be 2-D arrays; "
+            f"received shapes {mask.shape} and {heightmap.shape}"
+        )
+    if mask.shape != heightmap.shape:
+        raise ValueError(
+            f"mask and heightmap must have identical shapes; got {mask.shape} "
+            f"and {heightmap.shape}"
+        )
+    if not np.isfinite(pixel_size) or pixel_size <= 0:
+        raise ValueError("pixel_size must be a positive finite number")
+    if not np.isfinite(voxel_depth) or voxel_depth <= 0:
+        raise ValueError("voxel_depth must be a positive finite number")
 
     objects, graph = mask_to_objects(mask)
     median_area = np.median(
@@ -34,6 +56,11 @@ def from_heightmap(
     prepared = prepare_heightmap(
         heightmap, voxel_depth, smooth_scale, invert_z, inpaint_zeros, prune_zeros
     )
+    if not prune_zeros and not np.all(np.isfinite(prepared)):
+        raise ValueError(
+            "heightmap contains NaN or infinite values after preprocessing; "
+            "enable prune_zeros or provide a finite height map"
+        )
 
     bad_junctions: set[int] = set()
     for node_id, data in graph.nodes(data=True):
@@ -91,4 +118,3 @@ def from_heightmap(
         source_shape=mask.shape,
         prepared_heightmap=prepared,
     )
-
