@@ -6,7 +6,7 @@ from matplotlib.colors import Normalize
 
 from .models import DeprojResult
 
-cmap = plt.colormaps.get_cmap("viridis")
+CMAP = plt.colormaps.get_cmap("viridis")
 
 
 def _normalizer(values: np.ndarray) -> Normalize:
@@ -64,14 +64,14 @@ def plot_feature_map(result: DeprojResult, feature: str = "area"):
     for cell in result.epicells:
         p = cell.boundary
         value = float(getattr(cell, feature))
-        color = cmap(normalizer(value)) if np.isfinite(value) else "0.7"
+        color = CMAP(normalizer(value)) if np.isfinite(value) else "0.7"
         ax.fill(
             p[:, 0],
             p[:, 1],
             color=color,
             alpha=0.5,
         )
-    scalar_map = plt.cm.ScalarMappable(norm=normalizer, cmap=cmap)
+    scalar_map = plt.cm.ScalarMappable(norm=normalizer, cmap=CMAP)
     fig.colorbar(scalar_map, ax=ax, label=feature)
     ax.set_title(f"Cell feature: {feature}")
     ax.set_xlabel(f"x ({result.units})")
@@ -88,7 +88,7 @@ def plot_3d_boundaries(result: DeprojResult, feature: str = "area"):
     normalizer = _normalizer(values)
     for cell, value in zip(result.epicells, values, strict=True):
         p = np.vstack([cell.boundary, cell.boundary[0]])
-        color = cmap(normalizer(value)) if np.isfinite(value) else "0.7"
+        color = CMAP(normalizer(value)) if np.isfinite(value) else "0.7"
         ax.plot(p[:, 0], p[:, 1], p[:, 2], color=color, linewidth=0.6)
     ax.set_title(f"Deprojected boundaries colored by {feature}")
     ax.set_xlabel(f"x ({result.units})")

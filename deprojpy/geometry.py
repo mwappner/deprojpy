@@ -7,6 +7,12 @@ from skimage.measure import approximate_polygon
 
 
 def reduce_boundary(boundary: np.ndarray, tolerance: float = 0.005) -> np.ndarray:
+    """
+    Reduce the number of points in a boundary polygon using the Ramer-Douglas-Peucker 
+    algorithm to simplify the shape while preserving its overall structure. The
+    tolerance parameter controls the degree of simplification, with higher values
+    resulting in fewer points. 
+    """
     if len(boundary) < 4:
         return boundary.copy()
     closed = np.vstack([boundary, boundary[0]])
@@ -18,6 +24,13 @@ def reduce_boundary(boundary: np.ndarray, tolerance: float = 0.005) -> np.ndarra
 
 
 def polygon_metrics(boundary: np.ndarray) -> tuple[float, float, float, float]:
+    """
+    Compute 3D and 2D area and perimeter of a polygon defined by a boundary using
+    the shoelace formula and cross product. The 3D area is calculated using the
+    cross product of adjacent edges, while the 2D area is computed using the
+    shoelace formula. The perimeter is calculated as the sum of distances between
+    consecutive points in both 3D and 2D.
+    """
     centered = boundary - boundary.mean(axis=0)
     nxt = np.roll(centered, -1, axis=0)
     area3d = 0.5 * np.linalg.norm(np.cross(centered, nxt), axis=1).sum()
@@ -31,6 +44,9 @@ def polygon_metrics(boundary: np.ndarray) -> tuple[float, float, float, float]:
 
 
 def fit_plane(boundary: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """ 
+    Fit a plane to the given boundary points.
+    """
     centered = boundary - boundary.mean(axis=0)
     _, _, rotation = np.linalg.svd(centered, full_matrices=False)
     rotation = rotation.T
@@ -40,6 +56,12 @@ def fit_plane(boundary: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def rot_to_euler_zxz(r: np.ndarray) -> np.ndarray:
+    """
+    Convert a rotation matrix to Euler angles in the ZXZ convention.
+    The function computes the Euler angles (alpha, beta, gamma) from the given rotation
+    matrix. The angles are returned in radians and represent rotations about the Z, X,
+    and Z axes, respectively.
+    """
     beta = np.arccos(np.clip(r[2, 2], -1.0, 1.0))
     if abs(np.sin(beta)) > 1e-12:
         alpha = np.arctan2(r[0, 2], -r[1, 2])
