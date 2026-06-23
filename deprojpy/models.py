@@ -136,4 +136,4 @@ class DeprojResult:
         defaults to ``False``.
         """
         kwargs.setdefault("index", False)
-        self.to_dataframe().to_csv(path, **kwargs)
+        self.to_dataframe().to_csv(path, **kwargs) # type: ignore[no-untyped-call]

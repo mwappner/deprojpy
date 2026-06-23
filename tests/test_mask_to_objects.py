@@ -38,8 +38,8 @@ def test_mask_with_no_retained_cells_has_helpful_error():
         mask_to_objects(mask)
 
 
-def test_sample_mask_counts(matlab_samples):
-    mask = tifffile.imread(matlab_samples / "Segmentation-2.tif")
+def test_sample_mask_counts(deproj_samples):
+    mask = tifffile.imread(deproj_samples / "Segmentation-2.tif")
     objects, graph = mask_to_objects(mask)
     assert len(objects) == 426
     # README prints 1840 because MATLAB numel() counts a 920x2 node table.

@@ -4,6 +4,7 @@ from .core import from_heightmap
 from .heightmap import compute_curvatures, get_z, prepare_heightmap
 from .io import load_tiff_pair
 from .models import DeprojResult, Epicell
+from .plotting import save_plots
 
 __all__ = [
     "DeprojResult",
@@ -13,4 +14,5 @@ __all__ = [
     "get_z",
     "load_tiff_pair",
     "prepare_heightmap",
+    "save_plots",
 ]

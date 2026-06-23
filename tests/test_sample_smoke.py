@@ -2,19 +2,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import deprojpy as dp
-from deprojpy.diagnostics import (
+from deprojpy.plotting import (
     plot_3d_boundaries,
     plot_feature_histograms,
     plot_feature_map,
     plot_heightmap_with_centers,
     plot_mask_objects,
+    plot_relative_error_map,
 )
 
 
-def test_sample_end_to_end(matlab_samples):
+def test_sample_end_to_end(deproj_samples):
     mask, heightmap = dp.load_tiff_pair(
-        matlab_samples / "Segmentation-2.tif",
-        matlab_samples / "HeightMap-2.tif",
+        deproj_samples / "Segmentation-2.tif",
+        deproj_samples / "HeightMap-2.tif",
     )
     result = dp.from_heightmap(
         mask,
@@ -44,6 +45,7 @@ def test_sample_end_to_end(matlab_samples):
         lambda: plot_mask_objects(mask, result),
         lambda: plot_heightmap_with_centers(heightmap, result),
         lambda: plot_feature_map(result),
+        lambda: plot_relative_error_map(result),
         lambda: plot_3d_boundaries(result),
         lambda: plot_feature_histograms(frame),
     ]

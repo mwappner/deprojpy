@@ -64,18 +64,23 @@ def mask_to_objects(mask: np.ndarray) -> tuple[list[MaskObject], nx.Graph]:
     Input array indices are ``(row, column)``; all returned coordinates are
     geometric ``(x, y)`` pixel coordinates, with the first pixel at (0, 0).
     """
+    # Ensure the input has the expected binary structure before processing.
     image = validate_binary_mask(mask)
+    # Label each white region as an individual cell using 4-connectivity.
     white = image != 0
-    labels, n_components = ndi.label(white, ndi.generate_binary_structure(2, 1))
+    labels, n_components = ndi.label(white, ndi.generate_binary_structure(2, 1)) # type: ignore
 
+    # The black pixels form ridges; local ridge density helps identify junctions.
     ridge = ~white
     ridge_neighbors = ndi.convolve(
         ridge.astype(np.uint8), np.ones((3, 3), dtype=np.uint8), mode="constant"
     )
+    # Ridge pixels with enough neighboring ridge pixels are treated as junctions.
     junction_mask = ridge & (ridge_neighbors >= 4)
-    junction_labels, n_junctions = ndi.label(junction_mask, ndi.generate_binary_structure(2, 2))
+    junction_labels, n_junctions = ndi.label(junction_mask, ndi.generate_binary_structure(2, 2)) # type: ignore
     centers_rc = ndi.center_of_mass(junction_mask, junction_labels, range(1, n_junctions + 1))
 
+    # Create a graph node for each detected junction.
     graph = nx.Graph()
     for junction_id, (row, col) in enumerate(centers_rc, start=1):
         graph.add_node(junction_id, id=junction_id, centroid=np.array([col, row], float))
@@ -85,7 +90,7 @@ def mask_to_objects(mask: np.ndarray) -> tuple[list[MaskObject], nx.Graph]:
     objects: list[MaskObject] = []
     for label_id in range(1, n_components + 1):
         rows, cols = np.where(labels == label_id)
-        # MATLAB dilates first, then removes boundaries touching image edges.
+        # Skip border-touching cells because their boundaries are incomplete.
         if (
             rows.min() <= 1
             or rows.max() >= height - 2
@@ -93,16 +98,19 @@ def mask_to_objects(mask: np.ndarray) -> tuple[list[MaskObject], nx.Graph]:
             or cols.max() >= width - 2
         ):
             continue
+        # Slight dilation stabilizes boundary tracing around each cell.
         component = ndi.binary_dilation(labels == label_id, structure=footprint)
         boundary = _ordered_boundary(component)
         if len(boundary) < 3:
             continue
 
+        # Map the boundary back onto the junction labels to find touched nodes.
         xy = np.rint(boundary).astype(int)
         visited = junction_labels[xy[:, 1], xy[:, 0]]
         visited = visited[visited > 0]
         junction_ids = np.unique(visited)
 
+        # Keep traversal order so adjacent junctions can be connected in the graph.
         sequence: list[int] = []
         for jid in visited:
             jid = int(jid)
@@ -114,6 +122,7 @@ def mask_to_objects(mask: np.ndarray) -> tuple[list[MaskObject], nx.Graph]:
             if first != second:
                 graph.add_edge(first, second)
 
+        # Store the cell boundary and approximate center for later use.
         objects.append(MaskObject(boundary, boundary.mean(axis=0), junction_ids))
     if not objects:
         raise ValueError(

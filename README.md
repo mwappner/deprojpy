@@ -18,9 +18,7 @@ python -m pytest
 python -m compileall deprojpy
 ```
 
-The test suite finds optional MATLAB samples through
-`DEPROJ_MATLAB_SAMPLES`, common sibling checkout paths, or `./samples`.
-Sample-dependent tests skip clearly when those files are unavailable.
+The test suite uses the local sample TIFF files under `samples/`.
 
 ## Python usage
 
@@ -58,8 +56,8 @@ the same shape whose values encode the tissue's Z position.
 
 ```bash
 deprojpy-smoke \
-  ../DeProj-matlab/samples/Segmentation-2.tif \
-  ../DeProj-matlab/samples/HeightMap-2.tif \
+  samples/Segmentation-2.tif \
+  samples/HeightMap-2.tif \
   --pixel-size 0.183 \
   --voxel-depth 1.0 \
   --units µm \
@@ -67,8 +65,42 @@ deprojpy-smoke \
   --csv measurements.csv
 ```
 
-Add `--diagnostics diagnostics/` to save mask, height-map, feature-map,
+Add `--plots plots/` to save mask, height-map, feature-map,
 histogram, and 3-D-boundary PNGs.
+
+## Examples and cookbook
+
+See `examples/01_run_sample.py` for a minimal end-to-end run and
+`examples/02_plot_gallery.py` for plot generation:
+
+```bash
+python examples/01_run_sample.py --out examples/output
+python examples/02_plot_gallery.py --out examples/output
+```
+
+The cookbook in [`docs/cookbook.md`](docs/cookbook.md) shows how to export
+measurements, save plots, customize feature maps, compose plots on
+your own matplotlib axes, and check whether a run looks sane.
+
+## Plots and plotting
+
+```python
+import deprojpy as dp
+
+mask, heightmap = dp.load_tiff_pair("samples/Segmentation-2.tif", "samples/HeightMap-2.tif")
+result = dp.from_heightmap(mask, heightmap, pixel_size=0.183, units="µm")
+paths = dp.save_plots(
+    "plots",
+    mask,
+    heightmap,
+    result,
+    features=("area", "eccentricity"),
+)
+```
+
+Plotting helpers in `deprojpy.plotting` accept optional matplotlib axes, so
+they can be used directly in scripts and notebooks without calling
+`plt.show()`.
 
 ## Validation status
 

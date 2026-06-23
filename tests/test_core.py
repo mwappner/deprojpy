@@ -8,15 +8,16 @@ import pytest
 import tifffile
 
 import deprojpy as dp
-from deprojpy.cli import _save_diagnostics
-from deprojpy.diagnostics import (
+from deprojpy.models import DATAFRAME_COLUMNS, DeprojResult
+from deprojpy.plotting import (
     plot_3d_boundaries,
     plot_feature_histograms,
     plot_feature_map,
     plot_heightmap_with_centers,
     plot_mask_objects,
+    plot_relative_error_map,
+    save_plots,
 )
-from deprojpy.models import DATAFRAME_COLUMNS, DeprojResult
 
 
 def single_cell_mask(shape=(15, 15)):
@@ -98,13 +99,14 @@ def test_load_tiff_pair_rejects_mismatch(tmp_path):
         dp.load_tiff_pair(mask_path, heightmap_path)
 
 
-def test_diagnostics_handle_empty_results():
+def test_plots_handle_empty_results():
     result = DeprojResult([], nx.Graph(), source_shape=(10, 10))
     frame = result.to_dataframe()
     plotters = [
         lambda: plot_mask_objects(np.zeros((10, 10)), result),
         lambda: plot_heightmap_with_centers(np.full((10, 10), np.nan), result),
         lambda: plot_feature_map(result),
+        lambda: plot_relative_error_map(result),
         lambda: plot_3d_boundaries(result),
         lambda: plot_feature_histograms(frame),
     ]
@@ -114,24 +116,104 @@ def test_diagnostics_handle_empty_results():
         plt.close(figure)
 
 
-def test_diagnostics_can_be_saved(tmp_path):
+def test_plotters_return_figures_and_axes():
+    mask = single_cell_mask()
+    heightmap = np.ones(mask.shape)
+    result = dp.from_heightmap(mask, heightmap, inpaint_zeros=False, prune_zeros=False)
+    frame = result.to_dataframe()
+    plotters = [
+        lambda: plot_mask_objects(mask, result),
+        lambda: plot_heightmap_with_centers(heightmap, result),
+        lambda: plot_feature_map(result),
+        lambda: plot_relative_error_map(result),
+        lambda: plot_3d_boundaries(result),
+        lambda: plot_feature_histograms(frame),
+    ]
+    for plot in plotters:
+        figure, axes = plot()
+        assert isinstance(figure, plt.Figure)
+        assert axes is not None
+        plt.close(figure)
+
+
+def test_plotters_accept_supplied_axes():
+    mask = single_cell_mask()
+    heightmap = np.ones(mask.shape)
+    result = dp.from_heightmap(mask, heightmap, inpaint_zeros=False, prune_zeros=False)
+
+    figure, ax = plt.subplots()
+    returned_figure, returned_ax = plot_feature_map(result, "area", ax=ax, colorbar=False)
+    assert returned_figure is figure
+    assert returned_ax is ax
+    plt.close(figure)
+
+    figure, ax = plt.subplots()
+    returned_figure, returned_ax = plot_relative_error_map(
+        result, "area", ax=ax, colorbar=False
+    )
+    assert returned_figure is figure
+    assert returned_ax is ax
+    plt.close(figure)
+
+    figure, ax = plt.subplots()
+    returned_figure, returned_ax = plot_heightmap_with_centers(
+        heightmap, result, ax=ax, colorbar=False
+    )
+    assert returned_figure is figure
+    assert returned_ax is ax
+    plt.close(figure)
+
+    figure = plt.figure()
+    ax = figure.add_subplot(111, projection="3d")
+    returned_figure, returned_ax = plot_3d_boundaries(result, "area", ax=ax, colorbar=False)
+    assert returned_figure is figure
+    assert returned_ax is ax
+    plt.close(figure)
+
+
+def test_feature_plotters_reject_unknown_features():
     mask = single_cell_mask()
     result = dp.from_heightmap(mask, np.ones(mask.shape), inpaint_zeros=False, prune_zeros=False)
-    paths = _save_diagnostics(
-        tmp_path / "diagnostics",
+    with pytest.raises(ValueError, match="unknown Epicell feature"):
+        plot_feature_map(result, "not_a_feature")
+    with pytest.raises(ValueError, match="unknown Epicell feature"):
+        plot_3d_boundaries(result, "not_a_feature")
+    with pytest.raises(ValueError, match="unknown relative-error metric"):
+        plot_relative_error_map(result, "not_a_metric")
+
+
+def test_histograms_mark_missing_columns():
+    mask = single_cell_mask()
+    result = dp.from_heightmap(mask, np.ones(mask.shape), inpaint_zeros=False, prune_zeros=False)
+    figure, axes = plot_feature_histograms(
+        result.to_dataframe(), columns=["area", "missing_column"]
+    )
+    assert any("Missing column" in text.get_text() for text in axes.flat[1].texts)
+    plt.close(figure)
+
+
+def test_plots_can_be_saved(tmp_path):
+    mask = single_cell_mask()
+    result = dp.from_heightmap(mask, np.ones(mask.shape), inpaint_zeros=False, prune_zeros=False)
+    paths = save_plots(
+        tmp_path / "plots",
         mask,
         np.ones(mask.shape),
         result,
         result.to_dataframe(),
+        features=("area", "eccentricity"),
     )
+    assert all(type(path) is type(tmp_path) for path in paths)
     assert {path.name for path in paths} == {
         "mask_objects.png",
         "heightmap_centers.png",
         "area_map.png",
+        "eccentricity_map.png",
         "feature_histograms.png",
         "boundaries_3d.png",
     }
     assert all(path.is_file() and path.stat().st_size > 0 for path in paths)
+    assert not plt.get_fignums()
 
 
 def test_feature_plots_handle_nan_values():

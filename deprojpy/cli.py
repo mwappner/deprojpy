@@ -3,36 +3,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-
 from .core import from_heightmap
-from .diagnostics import (
-    plot_3d_boundaries,
-    plot_feature_histograms,
-    plot_feature_map,
-    plot_heightmap_with_centers,
-    plot_mask_objects,
-)
 from .io import load_tiff_pair
-
-
-def _save_diagnostics(directory: Path, mask, heightmap, result, frame) -> list[Path]:
-    directory.mkdir(parents=True, exist_ok=True)
-    plots = {
-        "mask_objects.png": lambda: plot_mask_objects(mask, result),
-        "heightmap_centers.png": lambda: plot_heightmap_with_centers(heightmap, result),
-        "area_map.png": lambda: plot_feature_map(result, "area"),
-        "feature_histograms.png": lambda: plot_feature_histograms(frame),
-        "boundaries_3d.png": lambda: plot_3d_boundaries(result, "area"),
-    }
-    written = []
-    for filename, make_plot in plots.items():
-        figure, _ = make_plot()
-        path = directory / filename
-        figure.savefig(path, dpi=150, bbox_inches="tight")
-        plt.close(figure)
-        written.append(path)
-    return written
+from .plotting import save_plots
 
 
 def main() -> None:
@@ -47,10 +20,10 @@ def main() -> None:
     parser.add_argument("--units", default="µm")
     parser.add_argument("--invert-z", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
-        "--diagnostics",
+        "--plots",
         type=Path,
         metavar="DIR",
-        help="save diagnostic PNG files in DIR",
+        help="save plot PNG files in DIR",
     )
     args = parser.parse_args()
     mask, heightmap = load_tiff_pair(args.mask, args.heightmap)
@@ -82,10 +55,10 @@ def main() -> None:
         args.csv.parent.mkdir(parents=True, exist_ok=True)
         result.to_csv(args.csv)
         print(f"Wrote CSV: {args.csv}")
-    if args.diagnostics:
-        paths = _save_diagnostics(args.diagnostics, mask, heightmap, result, frame)
+    if args.plots:
+        paths = save_plots(args.plots, mask, heightmap, result, frame)
         for path in paths:
-            print(f"Wrote diagnostic: {path}")
+            print(f"Wrote plot: {path}")
 
 
 if __name__ == "__main__":
