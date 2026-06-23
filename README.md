@@ -52,7 +52,12 @@ The segmentation must be a binary-like image with black/zero connected ridges
 and one nonzero value for cell interiors. The height map must be a 2-D image of
 the same shape whose values encode the tissue's Z position.
 
-## Command line
+Consult to cookbook in [`docs/cookbook.md`](docs/cookbook.md) for copy-pastable Python snippets: exporting measurements, saving plots, customizing feature maps, composing plots on matplotlib axes, and checking whether a run looks sane.
+
+## Optional command line helper
+
+The command-line entry point is useful for quick smoke checks, but it is not the
+main API surface.
 
 ```bash
 deprojpy-smoke \
@@ -67,20 +72,6 @@ deprojpy-smoke \
 
 Add `--plots plots/` to save mask, height-map, feature-map,
 histogram, and 3-D-boundary PNGs.
-
-## Examples and cookbook
-
-See `examples/01_run_sample.py` for a minimal end-to-end run and
-`examples/02_plot_gallery.py` for plot generation:
-
-```bash
-python examples/01_run_sample.py --out examples/output
-python examples/02_plot_gallery.py --out examples/output
-```
-
-The cookbook in [`docs/cookbook.md`](docs/cookbook.md) shows how to export
-measurements, save plots, customize feature maps, compose plots on
-your own matplotlib axes, and check whether a run looks sane.
 
 ## Plots and plotting
 

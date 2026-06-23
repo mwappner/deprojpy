@@ -1,6 +1,11 @@
+"""Script-style gallery of deprojpy plotting helpers.
+
+Edit the constants in the "User settings" block, then run this file from your
+editor, terminal, or copy selected sections into a notebook.
+"""
+
 from __future__ import annotations
 
-import argparse
 import sys
 from pathlib import Path
 
@@ -16,56 +21,61 @@ from deprojpy.plotting import (  # noqa: E402
     plot_relative_error_map,
 )
 
+# ---------------------------------------------------------------------------
+# User settings
+# ---------------------------------------------------------------------------
 
-def _sample_paths(args: argparse.Namespace, parser: argparse.ArgumentParser) -> tuple[Path, Path]:
-    if args.mask or args.heightmap:
-        if not (args.mask and args.heightmap):
-            parser.error("--mask and --heightmap must be supplied together")
-        mask = args.mask
-        heightmap = args.heightmap
-    else:
-        samples = args.samples or REPOSITORY / "samples"
-        mask = samples / "Segmentation-2.tif"
-        heightmap = samples / "HeightMap-2.tif"
+SAMPLES_DIR = REPOSITORY / "samples"
+MASK_PATH = SAMPLES_DIR / "Segmentation-2.tif"
+HEIGHTMAP_PATH = SAMPLES_DIR / "HeightMap-2.tif"
 
-    missing = [path for path in (mask, heightmap) if not path.is_file()]
-    if missing:
-        parser.error(
-            "sample file(s) not found: "
-            + ", ".join(str(path) for path in missing)
-            + "\nUse --samples DIR or pass --mask PATH --heightmap PATH."
+OUTPUT_DIR = REPOSITORY / "examples" / "output"
+DPI = 150
+
+PIXEL_SIZE = 0.183
+VOXEL_DEPTH = 1.0
+UNITS = "µm"
+INVERT_Z = True
+INPAINT_ZEROS = True
+PRUNE_ZEROS = True
+
+
+def _require_file(path: Path) -> None:
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Could not find {path}. Edit MASK_PATH and HEIGHTMAP_PATH near the top of "
+            "examples/02_plot_gallery.py to point at your TIFF files."
         )
-    return mask, heightmap
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate a small deprojpy plot gallery.")
-    parser.add_argument("--samples", type=Path, help="directory containing Segmentation-2.tif")
-    parser.add_argument("--mask", type=Path, help="explicit segmentation TIFF")
-    parser.add_argument("--heightmap", type=Path, help="explicit height-map TIFF")
-    parser.add_argument("--out", type=Path, default=REPOSITORY / "examples" / "output")
-    parser.add_argument("--pixel-size", type=float, default=0.183)
-    parser.add_argument("--voxel-depth", type=float, default=1.0)
-    parser.add_argument("--units", default="µm")
-    parser.add_argument("--invert-z", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--dpi", type=int, default=150)
-    args = parser.parse_args()
-
-    mask_path, heightmap_path = _sample_paths(args, parser)
+def analyze_sample(mask_path: Path = MASK_PATH, heightmap_path: Path = HEIGHTMAP_PATH):
+    """Load the sample files and return ``(mask, heightmap, result, dataframe)``."""
+    _require_file(mask_path)
+    _require_file(heightmap_path)
     mask, heightmap = dp.load_tiff_pair(mask_path, heightmap_path)
     result = dp.from_heightmap(
         mask,
         heightmap,
-        pixel_size=args.pixel_size,
-        voxel_depth=args.voxel_depth,
-        units=args.units,
-        invert_z=args.invert_z,
-        inpaint_zeros=True,
-        prune_zeros=True,
+        pixel_size=PIXEL_SIZE,
+        voxel_depth=VOXEL_DEPTH,
+        units=UNITS,
+        invert_z=INVERT_Z,
+        inpaint_zeros=INPAINT_ZEROS,
+        prune_zeros=PRUNE_ZEROS,
     )
-    frame = result.to_dataframe()
+    return mask, heightmap, result, result.to_dataframe()
 
-    plot_dir = args.out / "plots"
+
+def make_gallery(
+    mask_path: Path = MASK_PATH,
+    heightmap_path: Path = HEIGHTMAP_PATH,
+    output_dir: Path = OUTPUT_DIR,
+    dpi: int = DPI,
+) -> list[Path]:
+    """Generate the gallery images and return their paths."""
+    mask, heightmap, result, frame = analyze_sample(mask_path, heightmap_path)
+    plot_dir = output_dir / "plots"
+
     paths = dp.save_plots(
         plot_dir,
         mask,
@@ -73,13 +83,13 @@ def main() -> None:
         result,
         frame,
         features=("area", "eccentricity"),
-        dpi=args.dpi,
+        dpi=dpi,
     )
 
     figure, ax = plot_3d_boundaries(result, "area")
-    ax.view_init(azim=115, elev=1) # type: ignore
+    ax.view_init(azim=115, elev=1)  # type: ignore[attr-defined]
     boundary_path = plot_dir / "boundaries_3d.png"
-    figure.savefig(boundary_path, dpi=args.dpi, bbox_inches="tight")
+    figure.savefig(boundary_path, dpi=dpi, bbox_inches="tight")
     plt.close(figure)
 
     fig, axes = plt.subplots(1, 2, figsize=(9, 4))
@@ -103,7 +113,7 @@ def main() -> None:
     fig.suptitle("Custom feature-map subplots")
     fig.tight_layout()
     custom_path = plot_dir / "custom_feature_maps.png"
-    fig.savefig(custom_path, dpi=args.dpi, bbox_inches="tight")
+    fig.savefig(custom_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     paths.append(custom_path)
 
@@ -117,7 +127,7 @@ def main() -> None:
         colorbar_label="neighbors",
     )
     neighbor_path = plot_dir / "neighbor_map.png"
-    fig.savefig(neighbor_path, dpi=args.dpi, bbox_inches="tight")
+    fig.savefig(neighbor_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     paths.append(neighbor_path)
 
@@ -127,14 +137,14 @@ def main() -> None:
         "area_error",
         ax=axes[0, 0],
         title="Absolute area error",
-        colorbar_label=f"area error ({args.units}²)",
+        colorbar_label=f"area error ({UNITS}²)",
     )
     plot_feature_map(
         result,
         "perimeter_error",
         ax=axes[0, 1],
         title="Absolute perimeter error",
-        colorbar_label=f"perimeter error ({args.units})",
+        colorbar_label=f"perimeter error ({UNITS})",
     )
     plot_relative_error_map(
         result,
@@ -152,7 +162,7 @@ def main() -> None:
     )
     fig.suptitle("Absolute and relative deprojection correction maps")
     error_maps_path = plot_dir / "error_maps_2x2.png"
-    fig.savefig(error_maps_path, dpi=args.dpi, bbox_inches="tight")
+    fig.savefig(error_maps_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     paths.append(error_maps_path)
 
@@ -162,7 +172,8 @@ def main() -> None:
     print(f"Wrote plots under: {plot_dir}")
     for path in paths:
         print(f"  {path}")
+    return paths
 
 
 if __name__ == "__main__":
-    main()
+    make_gallery()

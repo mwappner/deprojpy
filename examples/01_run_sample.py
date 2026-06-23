@@ -1,6 +1,11 @@
+"""Minimal script-style deprojpy example.
+
+Edit the constants in the "User settings" block, then run this file from your
+editor, terminal, or copy the cells into a notebook.
+"""
+
 from __future__ import annotations
 
-import argparse
 import sys
 from pathlib import Path
 
@@ -9,55 +14,55 @@ sys.path.insert(0, str(REPOSITORY))
 
 import deprojpy as dp  # noqa: E402
 
+# ---------------------------------------------------------------------------
+# User settings
+# ---------------------------------------------------------------------------
 
-def _sample_paths(args: argparse.Namespace, parser: argparse.ArgumentParser) -> tuple[Path, Path]:
-    if args.mask or args.heightmap:
-        if not (args.mask and args.heightmap):
-            parser.error("--mask and --heightmap must be supplied together")
-        mask = args.mask
-        heightmap = args.heightmap
-    else:
-        samples = args.samples or REPOSITORY / "samples"
-        mask = samples / "Segmentation-2.tif"
-        heightmap = samples / "HeightMap-2.tif"
+SAMPLES_DIR = REPOSITORY / "samples"
+MASK_PATH = SAMPLES_DIR / "Segmentation-2.tif"
+HEIGHTMAP_PATH = SAMPLES_DIR / "HeightMap-2.tif"
 
-    missing = [path for path in (mask, heightmap) if not path.is_file()]
-    if missing:
-        parser.error(
-            "sample file(s) not found: "
-            + ", ".join(str(path) for path in missing)
-            + "\nUse --samples DIR or pass --mask PATH --heightmap PATH."
+OUTPUT_DIR = REPOSITORY / "examples" / "output"
+
+PIXEL_SIZE = 0.183
+VOXEL_DEPTH = 1.0
+UNITS = "µm"
+INVERT_Z = True
+INPAINT_ZEROS = True
+PRUNE_ZEROS = True
+
+
+def _require_file(path: Path) -> None:
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Could not find {path}. Edit MASK_PATH and HEIGHTMAP_PATH near the top of "
+            "examples/01_run_sample.py to point at your TIFF files."
         )
-    return mask, heightmap
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the bundled DeProj sample.")
-    parser.add_argument("--samples", type=Path, help="directory containing Segmentation-2.tif")
-    parser.add_argument("--mask", type=Path, help="explicit segmentation TIFF")
-    parser.add_argument("--heightmap", type=Path, help="explicit height-map TIFF")
-    parser.add_argument("--out", type=Path, default=REPOSITORY / "examples" / "output")
-    parser.add_argument("--pixel-size", type=float, default=0.183)
-    parser.add_argument("--voxel-depth", type=float, default=1.0)
-    parser.add_argument("--units", default="µm")
-    parser.add_argument("--invert-z", action=argparse.BooleanOptionalAction, default=True)
-    args = parser.parse_args()
+def run_sample(
+    mask_path: Path = MASK_PATH,
+    heightmap_path: Path = HEIGHTMAP_PATH,
+    output_dir: Path = OUTPUT_DIR,
+):
+    """Run the sample workflow and return ``(result, dataframe, csv_path)``."""
+    _require_file(mask_path)
+    _require_file(heightmap_path)
 
-    mask_path, heightmap_path = _sample_paths(args, parser)
     mask, heightmap = dp.load_tiff_pair(mask_path, heightmap_path)
     result = dp.from_heightmap(
         mask,
         heightmap,
-        pixel_size=args.pixel_size,
-        voxel_depth=args.voxel_depth,
-        units=args.units,
-        invert_z=args.invert_z,
-        inpaint_zeros=True,
-        prune_zeros=True,
+        pixel_size=PIXEL_SIZE,
+        voxel_depth=VOXEL_DEPTH,
+        units=UNITS,
+        invert_z=INVERT_Z,
+        inpaint_zeros=INPAINT_ZEROS,
+        prune_zeros=PRUNE_ZEROS,
     )
     frame = result.to_dataframe()
 
-    results_dir = args.out / "results"
+    results_dir = output_dir / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
     csv_path = results_dir / "measurements.csv"
     result.to_csv(csv_path)
@@ -76,7 +81,8 @@ def main() -> None:
     print(frame.head().to_string(index=False))
     print("\nCore measurement summary:")
     print(frame[["area", "perimeter", "eccentricity", "n_neighbors"]].describe().to_string())
+    return result, frame, csv_path
 
 
 if __name__ == "__main__":
-    main()
+    run_sample()
