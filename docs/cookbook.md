@@ -95,6 +95,57 @@ python examples/02_plot_gallery.py
 ![Feature histograms](../examples/output/plots/feature_histograms.png)
 ![3-D boundaries](../examples/output/plots/boundaries_3d.png)
 
+## Using labeled segmentation images
+
+Use this workflow when each pixel stores a cell ID instead of a binary ridge
+mask. Install the sibling `labelimage-tools` package first. The loader can run
+the label-image preprocessing pipeline, which fills gaps and removes small
+disconnected label fragments so labels form touching cell regions.
+
+```python
+import deprojpy as dp
+
+labels, heightmap = dp.load_label_heightmap_pair(
+    "samples/Labels-2.tif",
+    "samples/HeightMap-2.tif",
+)
+result = dp.from_labels(
+    labels,
+    heightmap,
+    pixel_size=0.183,
+    voxel_depth=1.0,
+    units="µm",
+    invert_z=True,
+)
+result.to_csv("examples/output/labeled_measurements.csv")
+```
+
+Original cell IDs are recoverable through the `source_label` column:
+
+```python
+df = result.to_dataframe()
+print(df[["id", "source_label", "area", "perimeter"]].head())
+```
+
+Junctions are detected from 3×3 label neighborhoods. Their subpixel centroids
+are used as graph nodes, cells are associated to junctions by label membership,
+and the junction sequence is ordered along each detailed label contour. The
+contours remain detailed label boundaries, not vertex-model polygons.
+
+```python
+from deprojpy.plotting import plot_label_objects
+
+fig, ax = plot_label_objects(labels, result)
+fig.savefig("examples/output/labeled_plots/label_objects.png", dpi=150)
+```
+
+The script examples are:
+
+```bash
+python examples/03_run_labeled_sample.py
+python examples/04_label_plots.py
+```
+
 ## Color cells by a different feature
 
 Feature maps are useful when you want to inspect spatial patterns rather than

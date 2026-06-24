@@ -52,6 +52,39 @@ The segmentation must be a binary-like image with black/zero connected ridges
 and one nonzero value for cell interiors. The height map must be a 2-D image of
 the same shape whose values encode the tissue's Z position.
 
+## Labeled-image input
+
+For label images where each pixel stores a cell ID, install the sibling
+`labelimage-tools` package locally and use `from_labels`:
+
+```bash
+python -m pip install -e /home/mw/Documents/Pasteur/Code/tissue_processing/labelimage-tools
+```
+
+```python
+import deprojpy as dp
+
+labels, heightmap = dp.load_label_heightmap_pair(
+    "samples/Labels-2.tif",
+    "samples/HeightMap-2.tif",
+)
+result = dp.from_labels(
+    labels,
+    heightmap,
+    pixel_size=0.183,
+    voxel_depth=1.0,
+    units="µm",
+    invert_z=True,
+)
+df = result.to_dataframe()
+```
+
+The labeled path uses detailed label contours, not simplified vertex-model
+polygons. Junctions are detected from 3×3 label neighborhoods; subpixel junction
+centroids become graph nodes; cells are associated to junctions by label
+membership and ordered along their detailed contour. Original segmentation IDs
+are preserved as `source_label` in the result dataframe.
+
 Consult to cookbook in [`docs/cookbook.md`](docs/cookbook.md) for copy-pastable Python snippets: exporting measurements, saving plots, customizing feature maps, composing plots on matplotlib axes, and checking whether a run looks sane.
 
 ## Optional command line helper
@@ -72,6 +105,12 @@ deprojpy-smoke \
 
 Add `--plots plots/` to save mask, height-map, feature-map,
 histogram, and 3-D-boundary PNGs.
+
+For labeled images:
+
+```bash
+deprojpy-smoke labels samples/Labels-2.tif samples/HeightMap-2.tif --csv labels.csv
+```
 
 ## Plots and plotting
 

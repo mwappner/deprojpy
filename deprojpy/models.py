@@ -9,6 +9,7 @@ import pandas as pd
 
 DATAFRAME_COLUMNS = [
     "id",
+    "source_label",
     "xc",
     "yc",
     "zc",
@@ -48,6 +49,7 @@ class Epicell:
     """
 
     id: int
+    source_label: int | None
     boundary: np.ndarray
     center: np.ndarray
     junction_ids: np.ndarray
@@ -99,6 +101,7 @@ class DeprojResult:
             rows.append(
                 {
                     "id": cell.id,
+                    "source_label": cell.source_label,
                     "xc": cell.center[0],
                     "yc": cell.center[1],
                     "zc": cell.center[2],

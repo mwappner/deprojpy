@@ -1,18 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import networkx as nx
 import numpy as np
 from scipy import ndimage as ndi
 from skimage import measure, morphology
 
-
-@dataclass
-class MaskObject:
-    boundary: np.ndarray
-    center: np.ndarray
-    junction_ids: np.ndarray
+from .objects import MaskObject
 
 
 def validate_binary_mask(mask: np.ndarray) -> np.ndarray:

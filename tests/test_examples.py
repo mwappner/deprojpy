@@ -17,6 +17,8 @@ def test_script_examples_can_be_called_from_python(tmp_path, deproj_samples):
     repository = Path(__file__).resolve().parents[1]
     run_sample = _load_example(repository / "examples" / "01_run_sample.py")
     gallery = _load_example(repository / "examples" / "02_plot_gallery.py")
+    labeled_run = _load_example(repository / "examples" / "03_run_labeled_sample.py")
+    labeled_plots = _load_example(repository / "examples" / "04_label_plots.py")
 
     _, frame, csv_path = run_sample.run_sample(
         deproj_samples / "Segmentation-2.tif",
@@ -40,3 +42,14 @@ def test_script_examples_can_be_called_from_python(tmp_path, deproj_samples):
         "error_maps_2x2.png",
     }
     assert all(path.is_file() and path.stat().st_size > 0 for path in paths)
+
+    _, labeled_frame, labeled_csv = labeled_run.run_labeled_sample(tmp_path / "labeled_run")
+    assert labeled_csv.is_file()
+    assert "source_label" in labeled_frame
+    labeled_paths = labeled_plots.make_labeled_plots(tmp_path / "labeled_gallery")
+    assert {path.name for path in labeled_paths} >= {
+        "label_objects.png",
+        "area_map.png",
+        "boundaries_3d.png",
+        "label_objects_custom.png",
+    }

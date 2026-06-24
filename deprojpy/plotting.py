@@ -82,6 +82,54 @@ def plot_mask_objects(
     return fig, ax
 
 
+def plot_label_objects(
+    labels: np.ndarray,
+    result: DeprojResult | None = None,
+    *,
+    ax=None,
+    background: int = 0,
+    use_graph_coloring: bool = True,
+    K: int = 8,
+    seed: int | None = None,
+    title: str | None = None,
+    show_junctions: bool = True,
+    show_cell_boundaries: bool = True,
+):
+    """Plot a labeled image with optional DeProjPy boundaries and junctions."""
+    try:
+        import labelimage_tools as lit
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError(
+            "plot_label_objects requires labelimage-tools. Install it with: "
+            "python -m pip install -e "
+            "/home/mw/Documents/Pasteur/Code/tissue_processing/labelimage-tools"
+        ) from exc
+    fig, ax = lit.plot_label_image(
+        labels,
+        ax=ax,
+        background=background,
+        use_graph_coloring=use_graph_coloring,
+        K=K,
+        seed=seed,
+        title=title or "Labeled cell image",
+    )
+    if show_cell_boundaries:
+        lit.plot_contours(labels, ax=ax, background=background, color="black", linewidth=0.5)
+    if result is not None:
+        for cell in result.epicells:
+            p = cell.boundary[:, :2] / result.pixel_size
+            ax.plot(p[:, 0], p[:, 1], color="white", linewidth=0.6, alpha=0.8)
+        if show_junctions:
+            centroids = []
+            for _, data in result.junction_graph.nodes(data=True):
+                if "centroid" in data:
+                    centroids.append(np.asarray(data["centroid"][:2]) / result.pixel_size)
+            if centroids:
+                xy = np.asarray(centroids)
+                ax.scatter(xy[:, 0], xy[:, 1], s=12, c="red", edgecolors="white", linewidths=0.4)
+    return fig, ax
+
+
 def plot_heightmap_with_centers(
     heightmap: np.ndarray,
     result: DeprojResult,
@@ -344,27 +392,35 @@ def plot_feature_histograms(
 
 def save_plots(
     directory,
-    mask: np.ndarray,
-    heightmap: np.ndarray,
-    result: DeprojResult,
+    mask: np.ndarray | None = None,
+    heightmap: np.ndarray | None = None,
+    result: DeprojResult | None = None,
     dataframe=None,
     *,
+    labels: np.ndarray | None = None,
     features=("area",),
     dpi: int = 150,
     close: bool = True,
 ) -> list[Path]:
     """Save the standard plot bundle and return written paths."""
+    if heightmap is None or result is None:
+        raise ValueError("save_plots requires heightmap=... and result=...")
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     if dataframe is None:
         dataframe = result.to_dataframe()
 
     plot_specs = [
-        ("mask_objects.png", lambda: plot_mask_objects(mask, result)),
         ("heightmap_centers.png", lambda: plot_heightmap_with_centers(heightmap, result)),
         ("feature_histograms.png", lambda: plot_feature_histograms(dataframe)),
         ("boundaries_3d.png", lambda: plot_3d_boundaries(result, "area")),
     ]
+    if labels is not None:
+        plot_specs.insert(0, ("label_objects.png", lambda: plot_label_objects(labels, result)))
+    elif mask is not None:
+        plot_specs.insert(0, ("mask_objects.png", lambda: plot_mask_objects(mask, result)))
+    else:
+        raise ValueError("save_plots requires either mask=... or labels=...")
     plot_specs.extend(
         (f"{feature}_map.png", lambda feature=feature: plot_feature_map(result, feature))
         for feature in features
@@ -379,4 +435,3 @@ def save_plots(
             plt.close(figure)
         written.append(path)
     return written
-
