@@ -15,25 +15,72 @@ ERROR_METRICS = {
     "area": ("area_error", "uncorrected_area"),
     "perimeter": ("perimeter_error", "uncorrected_perimeter"),
 }
+FEATURE_COMPONENTS = {
+    # EpiCell.curvatures = (mean, gaussian, k1, k2)
+    "curvature_mean": ("curvatures", 0),
+    "curvature_gaussian": ("curvatures", 1),
+    "curvature_k1": ("curvatures", 2),
+    "curvature_k2": ("curvatures", 3),
+}
 
 
 def _normalizer(
-    values: np.ndarray, vmin: float | None = None, vmax: float | None = None
-) -> Normalize:
+    values: np.ndarray, vmin: float | None = None, vmax: float | None = None,
+    norm: Normalize | None = None ) -> Normalize:
+    """Return a matplotlib Normalize object for the given values and limits."""
     finite = values[np.isfinite(values)]
+
+    if norm is not None:
+        if vmin is not None or vmax is not None:
+            raise ValueError(
+                "Pass either norm or vmin/vmax, not both. "
+                "If you need custom limits, put them in the norm itself, e.g. "
+                "Normalize(vmin=..., vmax=...) or TwoSlopeNorm(vcenter=0, vmin=..., vmax=...)."
+            )
+        if finite.size:
+            norm.autoscale_None(finite)
+        return norm
+
     low = float(vmin) if vmin is not None else (float(finite.min()) if finite.size else 0.0)
     high = float(vmax) if vmax is not None else (float(finite.max()) if finite.size else 1.0)
+
     if low == high:
         high = low + 1.0
+
     return Normalize(low, high)
 
-
 def _feature_values(result: DeprojResult, feature: str) -> np.ndarray:
-    if feature not in EPICELL_FEATURES:
-        known = ", ".join(sorted(EPICELL_FEATURES))
-        raise ValueError(f"unknown Epicell feature {feature!r}; choose one of: {known}")
-    return np.asarray([float(getattr(cell, feature)) for cell in result.epicells], dtype=float)
+    """Return one scalar value per Epicell for color normalization."""
+    return np.asarray(
+        [_cell_feature_value(cell, feature) for cell in result.epicells],
+        dtype=float,
+    )
 
+
+def _cell_feature_value(cell, feature: str) -> float:
+    """Return one scalar value from an EpiCell, including named array components."""
+    if feature in FEATURE_COMPONENTS:
+        attr, idx = FEATURE_COMPONENTS[feature]
+        return float(np.asarray(getattr(cell, attr))[idx])
+
+    value = getattr(cell, feature)
+    arr = np.asarray(value)
+
+    if arr.ndim != 0:
+        valid = [
+            name
+            for name, val in vars(cell).items()
+            if np.asarray(val).ndim == 0
+        ]
+        valid += list(FEATURE_COMPONENTS)
+        valid = sorted(valid)
+
+        raise ValueError(
+            f"Feature {feature!r} is not scalar and cannot be plotted directly.\n"
+            f"Valid features are:\n  " + "\n  ".join(valid)
+        )
+
+    return float(arr)
 
 def _relative_error_values(result: DeprojResult, metric: str, as_percent: bool) -> np.ndarray:
     if metric not in ERROR_METRICS:
@@ -51,7 +98,6 @@ def _relative_error_values(result: DeprojResult, metric: str, as_percent: bool) 
     if as_percent:
         values = values * 100.0
     return values
-
 
 def _parent_figure(ax):
     return ax.figure
@@ -165,6 +211,238 @@ def plot_heightmap_with_centers(
     ax.set_aspect("equal")
     return fig, ax
 
+def plot_curvature_map(
+    heightmap: np.ndarray,
+    result: DeprojResult | None = None,
+    *,
+    kind: str = "mean",
+    ax=None,
+    prepared: bool = False,
+    pixel_size: float | None = None,
+    voxel_depth: float | None = None,
+    units: str | None = None,
+    smooth_scale: float = -1.0,
+    invert_z: bool = False,
+    inpaint_zeros: bool = True,
+    prune_zeros: bool = True,
+    object_scale: float | None = None,
+    cmap: str | None = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    robust_percentile: float | None = 99.0,
+    symmetric: bool | None = None,
+    title: str | None = None,
+    colorbar: bool = True,
+    colorbar_label: str | None = None,
+    show_centers: bool = False,
+    center_size: float = 3.0,
+    center_color="black",
+):
+    """
+    Plot a curvature-derived map from a height map.
+
+    Parameters
+    ----------
+    heightmap
+        Raw input height map, unless ``prepared=True``. If raw, the same
+        preparation logic as DeProjPy is applied before curvature calculation.
+
+    result
+        Optional DeProjResult. If provided, ``pixel_size``, ``voxel_depth``,
+        and ``units`` default to values stored in the result.
+
+    kind
+        One of:
+
+        - ``"mean"``: mean curvature
+        - ``"gaussian"``: Gaussian curvature
+        - ``"k1"``: first principal curvature
+        - ``"k2"``: second principal curvature
+        - ``"slope"``: height-map gradient magnitude
+
+    prepared
+        If False, run ``prepare_heightmap`` before computing curvature.
+        If True, assume ``heightmap`` is already in physical z units.
+
+    pixel_size
+        Physical pixel size in x/y units. Defaults to ``result.pixel_size``
+        when result is provided, otherwise 1.
+
+    voxel_depth
+        Physical z scaling. Defaults to 1, or to ``result.voxel_depth`` if
+        present. Ignored when ``prepared=True``.
+
+    units
+        Unit label for axes/colorbar. Defaults to ``result.units`` when
+        available.
+
+    smooth_scale, invert_z, inpaint_zeros, prune_zeros
+        Passed to ``prepare_heightmap`` when ``prepared=False``.
+
+    object_scale
+        Optional smoothing scale passed to ``compute_curvatures``.
+
+    robust_percentile
+        If provided and vmin/vmax are not explicitly given, use symmetric or
+        direct percentile limits to reduce the effect of outliers.
+
+    symmetric
+        If True, use symmetric color limits around zero. By default this is
+        True for signed curvature maps and False for slope.
+
+    show_centers
+        If True and result is provided, overlay cell centers.
+
+    Returns
+    -------
+    fig, ax
+        Matplotlib figure and axis.
+    """
+    from .heightmap import compute_curvatures, prepare_heightmap
+
+    valid_kinds = {"mean", "gaussian", "k1", "k2", "slope"}
+    if kind not in valid_kinds:
+        known = ", ".join(sorted(valid_kinds))
+        raise ValueError(f"unknown curvature map kind {kind!r}; choose one of: {known}")
+
+    if result is not None:
+        if pixel_size is None:
+            pixel_size = result.pixel_size
+        if units is None:
+            units = result.units
+        if voxel_depth is None and hasattr(result, "voxel_depth"):
+            voxel_depth = result.voxel_depth
+
+    if pixel_size is None:
+        pixel_size = 1.0
+    if voxel_depth is None:
+        voxel_depth = 1.0
+    if units is None:
+        units = "a.u."
+
+    if prepared:
+        h = np.asarray(heightmap, dtype=float)
+    else:
+        h = prepare_heightmap(
+            heightmap,
+            voxel_depth=voxel_depth,
+            smooth_scale=smooth_scale,
+            invert_z=invert_z,
+            inpaint_zeros=inpaint_zeros,
+            prune_zeros=prune_zeros,
+        )
+
+    if kind == "slope":
+        hy, hx = np.gradient(h, pixel_size, pixel_size)
+        values = np.sqrt(hx * hx + hy * hy)
+    else:
+        mean, gaussian, k1, k2 = compute_curvatures(
+            h,
+            object_scale=object_scale,
+            pixel_size=pixel_size,
+        )
+        values_by_kind = {
+            "mean": mean,
+            "gaussian": gaussian,
+            "k1": k1,
+            "k2": k2,
+        }
+        values = values_by_kind[kind]
+
+    if symmetric is None:
+        symmetric = kind != "slope"
+
+    if cmap is None:
+        cmap = "viridis" if kind == "slope" else "coolwarm"
+
+    finite = values[np.isfinite(values)]
+
+    if vmin is None or vmax is None:
+        if finite.size == 0:
+            auto_vmin, auto_vmax = 0.0, 1.0
+        elif robust_percentile is not None:
+            p = float(robust_percentile)
+            if symmetric:
+                limit = float(np.nanpercentile(np.abs(finite), p))
+                if limit == 0:
+                    limit = 1.0
+                auto_vmin, auto_vmax = -limit, limit
+            else:
+                low = float(np.nanpercentile(finite, 100.0 - p))
+                high = float(np.nanpercentile(finite, p))
+                if low == high:
+                    high = low + 1.0
+                auto_vmin, auto_vmax = low, high
+        else:
+            auto_vmin = float(np.nanmin(finite))
+            auto_vmax = float(np.nanmax(finite))
+            if symmetric:
+                limit = max(abs(auto_vmin), abs(auto_vmax))
+                if limit == 0:
+                    limit = 1.0
+                auto_vmin, auto_vmax = -limit, limit
+            elif auto_vmin == auto_vmax:
+                auto_vmax = auto_vmin + 1.0
+
+        if vmin is None:
+            vmin = auto_vmin
+        if vmax is None:
+            vmax = auto_vmax
+
+    if ax is None:
+        fig, ax = plt.subplots(layout="constrained")
+    else:
+        fig = _parent_figure(ax)
+
+    image = ax.imshow(
+        values,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        origin="upper",
+    )
+
+    if show_centers:
+        if result is None:
+            raise ValueError("show_centers=True requires result=...")
+        centers = np.asarray(
+            [cell.center[:2] / result.pixel_size for cell in result.epicells],
+            dtype=float,
+        ).reshape(-1, 2)
+        if len(centers):
+            ax.scatter(
+                centers[:, 0],
+                centers[:, 1],
+                s=center_size,
+                c=center_color,
+            )
+
+    label_by_kind = {
+        "mean": "mean curvature",
+        "gaussian": "Gaussian curvature",
+        "k1": "principal curvature k1",
+        "k2": "principal curvature k2",
+        "slope": "slope magnitude",
+    }
+
+    units_by_kind = {
+        "mean": f"1/{units}",
+        "gaussian": f"1/{units}²",
+        "k1": f"1/{units}",
+        "k2": f"1/{units}",
+        "slope": "dimensionless",
+    }
+
+    ax.set_title(title or label_by_kind[kind].capitalize())
+    ax.set_xlabel("column / x (pixels)")
+    ax.set_ylabel("row / y (pixels)")
+    ax.set_aspect("equal")
+
+    if colorbar:
+        default_label = f"{label_by_kind[kind]} ({units_by_kind[kind]})"
+        fig.colorbar(image, ax=ax, label=colorbar_label or default_label)
+
+    return fig, ax
 
 def plot_feature_map(
     result: DeprojResult,
@@ -174,6 +452,7 @@ def plot_feature_map(
     cmap="viridis",
     vmin: float | None = None,
     vmax: float | None = None,
+    norm: Normalize | None = None,
     title: str | None = None,
     colorbar: bool = True,
     colorbar_label: str | None = None,
@@ -188,19 +467,13 @@ def plot_feature_map(
         fig, ax = plt.subplots(layout="constrained")
     else:
         fig = _parent_figure(ax)
-    normalizer = _normalizer(values, vmin, vmax)
+    normalizer = _normalizer(values, vmin, vmax, norm)
     color_map = plt.colormaps.get_cmap(cmap)
-    for cell in result.epicells:
+    for cell, value in zip(result.epicells, values):
         p = cell.boundary
-        value = float(getattr(cell, feature))
         color = color_map(normalizer(value)) if np.isfinite(value) else missing_color
-        ax.fill(
-            p[:, 0],
-            p[:, 1],
-            color=color,
-            edgecolor=edgecolor,
-            linewidth=linewidth,
-            alpha=alpha,
+        ax.fill(p[:, 0], p[:, 1],
+            color=color, edgecolor=edgecolor, linewidth=linewidth, alpha=alpha,
         )
 
     ax.set_title(title or f"Cell feature: {feature}")
@@ -222,6 +495,7 @@ def _plot_values_as_feature_map(
     cmap="viridis",
     vmin: float | None = None,
     vmax: float | None = None,
+    norm: Normalize | None = None,
     title: str | None = None,
     colorbar: bool = True,
     colorbar_label: str | None = None,
@@ -234,7 +508,7 @@ def _plot_values_as_feature_map(
         fig, ax = plt.subplots(layout="constrained")
     else:
         fig = _parent_figure(ax)
-    normalizer = _normalizer(values, vmin, vmax)
+    normalizer = _normalizer(values, vmin, vmax, norm)
     color_map = plt.colormaps.get_cmap(cmap)
     for cell, value in zip(result.epicells, values, strict=True):
         p = cell.boundary
@@ -310,6 +584,7 @@ def plot_3d_boundaries(
     cmap="viridis",
     vmin: float | None = None,
     vmax: float | None = None,
+    norm: Normalize | None = None,
     title: str | None = None,
     linewidth: float = 0.6,
     colorbar: bool = True,
@@ -325,7 +600,7 @@ def plot_3d_boundaries(
         fig = _parent_figure(ax)
         if not hasattr(ax, "get_zlim"):
             raise ValueError("plot_3d_boundaries requires a 3D matplotlib axis")
-    normalizer = _normalizer(values, vmin, vmax)
+    normalizer = _normalizer(values, vmin, vmax, norm)
     color_map = plt.colormaps.get_cmap(cmap)
     for cell, value in zip(result.epicells, values, strict=True):
         p = np.vstack([cell.boundary, cell.boundary[0]])
