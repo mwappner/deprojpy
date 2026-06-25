@@ -6,21 +6,61 @@ import numpy as np
 from skimage.measure import approximate_polygon
 
 
-def reduce_boundary(boundary: np.ndarray, tolerance: float = 0.005) -> np.ndarray:
+# Boundary simplification happens in pixel coordinates so the tolerance is
+# independent of pixel_size. 0.5 px is intentionally conservative.
+BOUNDARY_SIMPLIFICATION_TOLERANCE_PX = 0.5
+
+
+def simplify_boundary_pixels(
+    boundary_xy: np.ndarray,
+    *,
+    tolerance_px: float = BOUNDARY_SIMPLIFICATION_TOLERANCE_PX,
+) -> np.ndarray:
     """
-    Reduce the number of points in a boundary polygon using the Ramer-Douglas-Peucker 
-    algorithm to simplify the shape while preserving its overall structure. The
-    tolerance parameter controls the degree of simplification, with higher values
-    resulting in fewer points. 
+    Simplify an ordered cell boundary in pixel coordinates.
+
+    Parameters
+    ----------
+    boundary_xy : np.ndarray
+        Ordered ``(n, 2)`` boundary coordinates in geometric ``(x, y)`` pixel
+        order. The boundary may be open or explicitly closed.
+    tolerance_px : float, optional
+        Ramer-Douglas-Peucker distance tolerance in pixels. Larger values allow
+        stronger simplification. Default is the internal conservative tolerance
+        ``0.5`` px.
+
+    Returns
+    -------
+    np.ndarray
+        Simplified ordered boundary in ``(x, y)`` pixel coordinates. The output
+        follows the project convention of an open polygon: the first vertex is
+        not repeated at the end.
     """
+    boundary = np.asarray(boundary_xy, dtype=float)
+    if boundary.ndim != 2 or boundary.shape[1] != 2:
+        raise ValueError("boundary_xy must have shape (n, 2)")
+    if not np.isfinite(tolerance_px) or tolerance_px < 0:
+        raise ValueError("tolerance_px must be a non-negative finite number")
     if len(boundary) < 4:
         return boundary.copy()
-    closed = np.vstack([boundary, boundary[0]])
-    reduced = approximate_polygon(closed[:, :2], tolerance=tolerance)
+
+    # approximate_polygon expects an explicit closed ring for polygonal
+    # boundaries. DeProjPy stores boundaries open and closes them implicitly in
+    # metric calculations, so strip the repeated endpoint after simplification.
+    closed = (
+        boundary
+        if np.allclose(boundary[0], boundary[-1])
+        else np.vstack([boundary, boundary[0]])
+    )
+    reduced = approximate_polygon(closed, tolerance=float(tolerance_px))
     if len(reduced) > 1 and np.allclose(reduced[0], reduced[-1]):
         reduced = reduced[:-1]
-    indices = [int(np.argmin(np.sum((boundary[:, :2] - point) ** 2, axis=1))) for point in reduced]
-    return boundary[np.asarray(indices)]
+
+    # Tiny or highly simplified contours can collapse below a usable polygon.
+    # In that case, keep the detailed boundary rather than fabricating geometry.
+    if len(reduced) < 4:
+        return boundary[:-1].copy() if np.allclose(boundary[0], boundary[-1]) else boundary.copy()
+    return np.asarray(reduced, dtype=float)
 
 
 def polygon_metrics(boundary: np.ndarray) -> tuple[float, float, float, float]:

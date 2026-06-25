@@ -79,11 +79,14 @@ result = dp.from_labels(
 df = result.to_dataframe()
 ```
 
-The labeled path uses detailed label contours, not simplified vertex-model
-polygons. Junctions are detected from 3×3 label neighborhoods; subpixel junction
-centroids become graph nodes; cells are associated to junctions by label
-membership and ordered along their detailed contour. Original segmentation IDs
-are preserved as `source_label` in the result dataframe.
+The labeled path starts from detailed label contours, not simplified
+vertex-model polygons. Cell boundaries are then simplified in pixel coordinates
+before height-map sampling; the internal default tolerance is 0.5 px, so this
+step is independent of physical `pixel_size`. Junctions are detected from 3×3
+label neighborhoods; subpixel junction centroids become graph nodes; cells are
+associated to junctions by label membership and ordered along their contour.
+Original segmentation IDs are preserved as `source_label` in the result
+dataframe.
 
 Consult to cookbook in [`docs/cookbook.md`](docs/cookbook.md) for copy-pastable Python snippets: exporting measurements, saving plots, customizing feature maps, composing plots on matplotlib axes, and checking whether a run looks sane.
 

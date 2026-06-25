@@ -8,7 +8,9 @@ import pytest
 import tifffile
 
 import deprojpy as dp
+import deprojpy.core as core
 from deprojpy.models import DATAFRAME_COLUMNS, DeprojResult
+from deprojpy.objects import MaskObject
 from deprojpy.plotting import (
     plot_3d_boundaries,
     plot_feature_histograms,
@@ -50,6 +52,68 @@ def test_tilted_surface_has_finite_larger_metrics():
     ).all()
     assert cell.area >= cell.uncorrected_area
     assert cell.perimeter >= cell.uncorrected_perimeter
+
+
+def test_boundary_simplification_happens_inside_shared_pipeline(monkeypatch):
+    top = np.column_stack([np.arange(2, 13), np.full(11, 2)])
+    right = np.column_stack([np.full(8, 12), np.arange(3, 11)])
+    bottom = np.column_stack([np.arange(11, 1, -1), np.full(10, 10)])
+    left = np.column_stack([np.full(7, 2), np.arange(9, 2, -1)])
+    boundary = np.vstack([top, right, bottom, left]).astype(float)
+    obj = MaskObject(
+        boundary=boundary,
+        center=boundary.mean(axis=0),
+        junction_ids=np.array([], int),
+    )
+    heightmap = np.ones((15, 15), dtype=float)
+
+    monkeypatch.setattr(core, "BOUNDARY_SIMPLIFICATION_TOLERANCE_PX", 0.0)
+    detailed = core._from_objects_and_graph(
+        [obj],
+        nx.Graph(),
+        heightmap,
+        source_shape=heightmap.shape,
+        inpaint_zeros=False,
+        prune_zeros=False,
+    )
+
+    monkeypatch.setattr(core, "BOUNDARY_SIMPLIFICATION_TOLERANCE_PX", 2.0)
+    simplified = core._from_objects_and_graph(
+        [obj],
+        nx.Graph(),
+        heightmap,
+        source_shape=heightmap.shape,
+        inpaint_zeros=False,
+        prune_zeros=False,
+    )
+
+    assert len(simplified.epicells[0].boundary) < len(detailed.epicells[0].boundary)
+
+
+def test_boundary_simplification_point_count_is_independent_of_pixel_size():
+    mask = single_cell_mask()
+    heightmap = np.ones(mask.shape)
+
+    result_px1 = dp.from_heightmap(
+        mask,
+        heightmap,
+        pixel_size=1.0,
+        inpaint_zeros=False,
+        prune_zeros=False,
+    )
+    result_px02 = dp.from_heightmap(
+        mask,
+        heightmap,
+        pixel_size=0.2,
+        inpaint_zeros=False,
+        prune_zeros=False,
+    )
+
+    cell1 = result_px1.epicells[0]
+    cell02 = result_px02.epicells[0]
+    assert len(cell1.boundary) == len(cell02.boundary)
+    assert np.isclose(cell02.uncorrected_area, cell1.uncorrected_area * 0.2**2)
+    assert np.isclose(cell02.uncorrected_perimeter, cell1.uncorrected_perimeter * 0.2)
 
 
 @pytest.mark.parametrize("parameter", ["pixel_size", "voxel_depth"])

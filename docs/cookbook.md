@@ -129,8 +129,9 @@ print(df[["id", "source_label", "area", "perimeter"]].head())
 
 Junctions are detected from 3×3 label neighborhoods. Their subpixel centroids
 are used as graph nodes, cells are associated to junctions by label membership,
-and the junction sequence is ordered along each detailed label contour. The
-contours remain detailed label boundaries, not vertex-model polygons.
+and the junction sequence is ordered along each label contour. Boundaries are
+extracted as detailed label contours, then simplified in pixel coordinates
+before height-map sampling with an internal 0.5 px tolerance.
 
 ```python
 from deprojpy.plotting import plot_label_objects

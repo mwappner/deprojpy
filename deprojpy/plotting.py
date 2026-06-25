@@ -94,6 +94,8 @@ def plot_label_objects(
     title: str | None = None,
     show_junctions: bool = True,
     show_cell_boundaries: bool = True,
+    cmap: str | None = None,
+    cyclic_cmap: bool = False,
 ):
     """Plot a labeled image with optional DeProjPy boundaries and junctions."""
     try:
@@ -112,6 +114,8 @@ def plot_label_objects(
         K=K,
         seed=seed,
         title=title or "Labeled cell image",
+        cmap=cmap,
+        cyclic_cmap=cyclic_cmap
     )
     if show_cell_boundaries:
         lit.plot_contours(labels, ax=ax, background=background, color="black", linewidth=0.5)

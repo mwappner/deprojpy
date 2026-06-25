@@ -5,7 +5,13 @@ from typing import Literal
 import networkx as nx
 import numpy as np
 
-from .geometry import fit_ellipse_3d, fit_plane, polygon_metrics, reduce_boundary
+from .geometry import (
+    BOUNDARY_SIMPLIFICATION_TOLERANCE_PX,
+    fit_ellipse_3d,
+    fit_plane,
+    polygon_metrics,
+    simplify_boundary_pixels,
+)
 from .heightmap import compute_curvatures, get_z, prepare_heightmap
 from .labels import labels_to_objects
 from .mask import mask_to_objects
@@ -84,13 +90,20 @@ def _from_objects_and_graph(
     for obj in objects:
         if bad_junctions.intersection(map(int, obj.junction_ids)):
             continue
-        xy = obj.boundary * pixel_size
+
+        # Simplify in pixel coordinates before height-map sampling or physical
+        # scaling. This keeps the tolerance independent of pixel_size and avoids
+        # carrying redundant contour vertices into the 3-D geometry path.
+        boundary_px = simplify_boundary_pixels(
+            np.asarray(obj.boundary, dtype=float),
+            tolerance_px=BOUNDARY_SIMPLIFICATION_TOLERANCE_PX,
+        )
+        xy = boundary_px * pixel_size
         z = get_z(xy, prepared, pixel_size)
         if prune_zeros and (not np.all(np.isfinite(z)) or np.any(z == 0)):
             continue
         boundary = np.c_[xy, z]
-        reduced = reduce_boundary(boundary)
-        area, perimeter, area2d, perimeter2d = polygon_metrics(reduced)
+        area, perimeter, area2d, perimeter2d = polygon_metrics(boundary)
         rotation, euler = fit_plane(boundary)
         ellipse, eccentricity, direction = fit_ellipse_3d(boundary, rotation)
         center = boundary.mean(axis=0)
@@ -107,7 +120,7 @@ def _from_objects_and_graph(
             Epicell(
                 id=cell_id,
                 source_label=source_label,
-                boundary=reduced,
+                boundary=boundary,
                 center=center,
                 junction_ids=obj.junction_ids.copy(),
                 n_neighbors=len(obj.junction_ids),
