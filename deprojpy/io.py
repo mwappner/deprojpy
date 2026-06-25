@@ -51,7 +51,7 @@ def load_label_heightmap_pair(
     crop_to_foreground: bool = False,
     remove_small_bits: bool = True,
     fill_holes: bool = True,
-    dilate_borders: bool = True,
+    dilate_borders: bool = False,
     shuffle: bool = False,
     seed: int | None = None,
     connectivity: int = 1,

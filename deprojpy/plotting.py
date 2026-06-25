@@ -260,7 +260,7 @@ def plot_relative_error_map(
     metric: str = "area",
     *,
     ax=None,
-    cmap="coolwarm",
+    cmap="magma",
     vmin: float | None = None,
     vmax: float | None = None,
     title: str | None = None,
@@ -422,7 +422,7 @@ def save_plots(
     else:
         raise ValueError("save_plots requires either mask=... or labels=...")
     plot_specs.extend(
-        (f"{feature}_map.png", lambda feature=feature: plot_feature_map(result, feature))
+        (f"{feature}_map.png", lambda feature=feature: plot_feature_map(result, feature)) # type: ignore (results is not None here)
         for feature in features
     )
 
