@@ -5,18 +5,13 @@ import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
+from numba import njit, prange
 from scipy import sparse
 from scipy.ndimage import map_coordinates
 from scipy.sparse.csgraph import dijkstra
-from scipy.spatial import cKDTree
+from scipy.spatial import KDTree
 
 from .heightmap import prepare_heightmap
-
-try:  # pragma: no cover - fallback is for minimal environments without numba
-    from numba import njit, prange
-except Exception:  # pragma: no cover
-    njit = None
-    prange = range
 
 
 def _validate_xy_array(xy: np.ndarray, *, name: str = "xy") -> np.ndarray:
@@ -76,225 +71,151 @@ def sample_height_at_xy(
     return np.asarray(map_coordinates(h, coords_yx, order=order, mode=mode), dtype=float)
 
 
-if njit is not None:
+@njit(cache=True)
+def _bilinear_sample(heightmap, x, y):  # pragma: no cover - exercised through wrappers
+    h, w = heightmap.shape
 
-    @njit(cache=True)
-    def _bilinear_sample(heightmap, x, y):  # pragma: no cover - exercised through wrappers
-        h, w = heightmap.shape
+    # Clamp before interpolation to match map_coordinates(..., mode="nearest")
+    # for order-1 sampling in the common use cases here.
+    if x < 0.0:
+        x = 0.0
+    elif x > w - 1:
+        x = w - 1.0
+    if y < 0.0:
+        y = 0.0
+    elif y > h - 1:
+        y = h - 1.0
 
-        # Clamp before interpolation to match map_coordinates(..., mode="nearest")
-        # for order-1 sampling in the common use cases here.
-        if x < 0.0:
-            x = 0.0
-        elif x > w - 1:
-            x = w - 1.0
-        if y < 0.0:
-            y = 0.0
-        elif y > h - 1:
-            y = h - 1.0
+    x0 = int(math.floor(x))
+    y0 = int(math.floor(y))
+    x1 = min(x0 + 1, w - 1)
+    y1 = min(y0 + 1, h - 1)
+    tx = x - x0
+    ty = y - y0
 
-        x0 = int(math.floor(x))
-        y0 = int(math.floor(y))
-        x1 = min(x0 + 1, w - 1)
-        y1 = min(y0 + 1, h - 1)
-        tx = x - x0
-        ty = y - y0
+    z00 = float(heightmap[y0, x0])
+    z10 = float(heightmap[y0, x1])
+    z01 = float(heightmap[y1, x0])
+    z11 = float(heightmap[y1, x1])
+    z0 = z00 * (1.0 - tx) + z10 * tx
+    z1 = z01 * (1.0 - tx) + z11 * tx
+    return z0 * (1.0 - ty) + z1 * ty
 
-        z00 = float(heightmap[y0, x0])
-        z10 = float(heightmap[y0, x1])
-        z01 = float(heightmap[y1, x0])
-        z11 = float(heightmap[y1, x1])
-        z0 = z00 * (1.0 - tx) + z10 * tx
-        z1 = z01 * (1.0 - tx) + z11 * tx
-        return z0 * (1.0 - ty) + z1 * ty
 
-    @njit(cache=True)
-    def _surface_straight_distance_numba(
-        heightmap,
-        x0,
-        y0,
-        x1,
-        y1,
-        pixel_size,
-        voxel_depth,
-        n_samples,
-    ):  # pragma: no cover
-        dx = x1 - x0
-        dy = y1 - y0
-        if n_samples < 2:
-            n_samples = 2
+@njit(cache=True)
+def _surface_straight_distance_numba(
+    heightmap,
+    x0,
+    y0,
+    x1,
+    y1,
+    pixel_size,
+    voxel_depth,
+    n_samples,
+):  # pragma: no cover
+    dx = x1 - x0
+    dy = y1 - y0
+    if n_samples < 2:
+        n_samples = 2
 
-        prev_x = x0
-        prev_y = y0
-        prev_z = _bilinear_sample(heightmap, prev_x, prev_y) * voxel_depth
-        total = 0.0
+    prev_x = x0
+    prev_y = y0
+    prev_z = _bilinear_sample(heightmap, prev_x, prev_y) * voxel_depth
+    total = 0.0
 
-        for sample in range(1, n_samples):
-            t = sample / (n_samples - 1)
-            x = x0 + t * dx
-            y = y0 + t * dy
-            z = _bilinear_sample(heightmap, x, y) * voxel_depth
-            ddx = (x - prev_x) * pixel_size
-            ddy = (y - prev_y) * pixel_size
-            ddz = z - prev_z
-            total += math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz)
-            prev_x = x
-            prev_y = y
-            prev_z = z
-        return total
+    for sample in range(1, n_samples):
+        t = sample / (n_samples - 1)
+        x = x0 + t * dx
+        y = y0 + t * dy
+        z = _bilinear_sample(heightmap, x, y) * voxel_depth
+        ddx = (x - prev_x) * pixel_size
+        ddy = (y - prev_y) * pixel_size
+        ddz = z - prev_z
+        total += math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz)
+        prev_x = x
+        prev_y = y
+        prev_z = z
+    return total
 
-    @njit(cache=True, parallel=True)
-    def _pairwise_surface_straight_distances_numba(
-        heightmap,
-        points_xy,
-        pixel_size,
-        voxel_depth,
-        samples_per_pixel,
-        min_samples,
-        max_samples,
-    ):  # pragma: no cover
-        n_points = points_xy.shape[0]
-        out = np.zeros((n_points, n_points), dtype=np.float64)
-        for i in prange(n_points):
-            xi = points_xy[i, 0]
-            yi = points_xy[i, 1]
-            for j in range(i + 1, n_points):
-                dx = points_xy[j, 0] - xi
-                dy = points_xy[j, 1] - yi
-                xy_dist_px = math.sqrt(dx * dx + dy * dy)
-                n_samples = int(math.ceil(xy_dist_px * samples_per_pixel)) + 1
-                if n_samples < min_samples:
-                    n_samples = min_samples
-                elif n_samples > max_samples:
-                    n_samples = max_samples
-                distance = _surface_straight_distance_numba(
-                    heightmap,
-                    xi,
-                    yi,
-                    points_xy[j, 0],
-                    points_xy[j, 1],
-                    pixel_size,
-                    voxel_depth,
-                    n_samples,
-                )
-                out[i, j] = distance
-                out[j, i] = distance
-        return out
 
-    @njit(cache=True, parallel=True)
-    def _selected_surface_straight_distances_numba(
-        heightmap,
-        points_xy,
-        pairs,
-        pixel_size,
-        voxel_depth,
-        samples_per_pixel,
-        min_samples,
-        max_samples,
-    ):  # pragma: no cover
-        n_pairs = pairs.shape[0]
-        out = np.empty(n_pairs, dtype=np.float64)
-        for k in prange(n_pairs):
-            i = pairs[k, 0]
-            j = pairs[k, 1]
-            x0 = points_xy[i, 0]
-            y0 = points_xy[i, 1]
-            x1 = points_xy[j, 0]
-            y1 = points_xy[j, 1]
-            dx = x1 - x0
-            dy = y1 - y0
+@njit(cache=True, parallel=True)
+def _pairwise_surface_straight_distances_numba(
+    heightmap,
+    points_xy,
+    pixel_size,
+    voxel_depth,
+    samples_per_pixel,
+    min_samples,
+    max_samples,
+):  # pragma: no cover
+    n_points = points_xy.shape[0]
+    out = np.zeros((n_points, n_points), dtype=np.float64)
+    for i in prange(n_points):
+        xi = points_xy[i, 0]
+        yi = points_xy[i, 1]
+        for j in range(i + 1, n_points):
+            dx = points_xy[j, 0] - xi
+            dy = points_xy[j, 1] - yi
             xy_dist_px = math.sqrt(dx * dx + dy * dy)
             n_samples = int(math.ceil(xy_dist_px * samples_per_pixel)) + 1
             if n_samples < min_samples:
                 n_samples = min_samples
             elif n_samples > max_samples:
                 n_samples = max_samples
-            out[k] = _surface_straight_distance_numba(
+            distance = _surface_straight_distance_numba(
                 heightmap,
-                x0,
-                y0,
-                x1,
-                y1,
+                xi,
+                yi,
+                points_xy[j, 0],
+                points_xy[j, 1],
                 pixel_size,
                 voxel_depth,
                 n_samples,
             )
-        return out
+            out[i, j] = distance
+            out[j, i] = distance
+    return out
 
-else:  # pragma: no cover
 
-    def _bilinear_sample(heightmap, x, y):
-        return float(sample_height_at_xy(heightmap, np.array([[x, y]]))[0])
-
-    def _surface_straight_distance_numba(
-        heightmap,
-        x0,
-        y0,
-        x1,
-        y1,
-        pixel_size,
-        voxel_depth,
-        n_samples,
-    ):
-        points = np.column_stack(
-            [np.linspace(x0, x1, n_samples), np.linspace(y0, y1, n_samples)]
+@njit(cache=True, parallel=True)
+def _selected_surface_straight_distances_numba(
+    heightmap,
+    points_xy,
+    pairs,
+    pixel_size,
+    voxel_depth,
+    samples_per_pixel,
+    min_samples,
+    max_samples,
+):  # pragma: no cover
+    n_pairs = pairs.shape[0]
+    out = np.empty(n_pairs, dtype=np.float64)
+    for k in prange(n_pairs):
+        i = pairs[k, 0]
+        j = pairs[k, 1]
+        x0 = points_xy[i, 0]
+        y0 = points_xy[i, 1]
+        x1 = points_xy[j, 0]
+        y1 = points_xy[j, 1]
+        dx = x1 - x0
+        dy = y1 - y0
+        xy_dist_px = math.sqrt(dx * dx + dy * dy)
+        n_samples = int(math.ceil(xy_dist_px * samples_per_pixel)) + 1
+        if n_samples < min_samples:
+            n_samples = min_samples
+        elif n_samples > max_samples:
+            n_samples = max_samples
+        out[k] = _surface_straight_distance_numba(
+            heightmap,
+            x0,
+            y0,
+            x1,
+            y1,
+            pixel_size,
+            voxel_depth,
+            n_samples,
         )
-        z = sample_height_at_xy(heightmap, points) * voxel_depth
-        xyz = np.column_stack([points[:, 0] * pixel_size, points[:, 1] * pixel_size, z])
-        return float(np.linalg.norm(np.diff(xyz, axis=0), axis=1).sum())
-
-    def _pairwise_surface_straight_distances_numba(
-        heightmap,
-        points_xy,
-        pixel_size,
-        voxel_depth,
-        samples_per_pixel,
-        min_samples,
-        max_samples,
-    ):
-        n_points = len(points_xy)
-        out = np.zeros((n_points, n_points), dtype=float)
-        for i in range(n_points):
-            for j in range(i + 1, n_points):
-                out[i, j] = surface_straight_distance(
-                    heightmap,
-                    points_xy[i],
-                    points_xy[j],
-                    pixel_size=pixel_size,
-                    voxel_depth=voxel_depth,
-                    samples_per_pixel=samples_per_pixel,
-                    min_samples=min_samples,
-                    max_samples=max_samples,
-                )
-                out[j, i] = out[i, j]
-        return out
-
-    def _selected_surface_straight_distances_numba(
-        heightmap,
-        points_xy,
-        pairs,
-        pixel_size,
-        voxel_depth,
-        samples_per_pixel,
-        min_samples,
-        max_samples,
-    ):
-        return np.asarray(
-            [
-                surface_straight_distance(
-                    heightmap,
-                    points_xy[i],
-                    points_xy[j],
-                    pixel_size=pixel_size,
-                    voxel_depth=voxel_depth,
-                    samples_per_pixel=samples_per_pixel,
-                    min_samples=min_samples,
-                    max_samples=max_samples,
-                )
-                for i, j in pairs
-            ],
-            dtype=float,
-        )
+    return out
 
 
 def _auto_n_samples(
@@ -417,8 +338,77 @@ class SurfaceDistanceCalculator:
     """
     Reusable calculator for distances on a height-map surface.
 
-    The public point convention is geometric ``(x, y)`` in pixel coordinates.
-    Height maps remain ordinary arrays indexed as ``heightmap[row=y, column=x]``.
+    This class stores the height map and physical scale factors needed to
+    evaluate distances on the height-field surface
+    ``r(x, y) = (x, y, h(x, y))``. It is intended to be constructed once and
+    reused for many distance queries, especially all-pairs distances between
+    cell centers.
+
+    Parameters
+    ----------
+    heightmap : np.ndarray
+        Two-dimensional height map. Arrays are indexed in image order as
+        ``heightmap[row=y, column=x]``. Public point inputs to calculator
+        methods are always geometric ``(x, y)`` pixel coordinates.
+    pixel_size : float
+        Physical size of one pixel in the ``x`` and ``y`` directions. If
+        ``units="µm"``, for example, distances returned by the calculator are
+        in micrometers.
+    voxel_depth : float, optional
+        Physical scale factor applied to height-map values. Use ``1.0`` when
+        ``heightmap`` is already prepared in physical z units. When using
+        :meth:`from_heightmap` or :meth:`from_result` with ``prepared=False``,
+        the returned calculator stores a prepared physical-height map and sets
+        ``voxel_depth`` to ``1.0`` internally.
+    units : str, optional
+        Text label for the physical distance units. This does not change
+        calculations; it is stored for display and examples.
+    prepared : bool, optional
+        Whether the stored ``heightmap`` is already the array used directly for
+        distance calculations. Direct construction does not call
+        :func:`deprojpy.heightmap.prepare_heightmap`; use
+        :meth:`from_heightmap` or :meth:`from_result` to prepare raw maps.
+    result : object, optional
+        Optional DeProjPy result-like object. When present, methods such as
+        :meth:`straight_pairwise_distances` can use its cell centers if explicit
+        ``points_xy`` are not supplied.
+
+    Coordinate and unit conventions
+    -------------------------------
+    All point arguments accepted by public methods are ``(x, y)`` pixel
+    coordinates, not physical coordinates and not array ``(row, column)``
+    indices. Cell centers stored in :class:`deprojpy.models.Epicell` are already
+    physical ``(x, y, z)`` coordinates; use :func:`cell_centers_xy_pixels` or
+    :meth:`from_result` to convert them consistently.
+
+    Methods return physical distances. In the ``x`` and ``y`` directions,
+    pixel-coordinate differences are multiplied by ``pixel_size``. In the
+    ``z`` direction, sampled height-map differences are multiplied by
+    ``voxel_depth`` unless the map was already prepared into physical units.
+
+    Main methods
+    ------------
+    ``sample_height(xy)``
+        Bilinearly sample the calculator's height map at ``(x, y)`` pixel
+        coordinates and return physical z values.
+    ``straight_distance(p0_xy, p1_xy, ...)``
+        Follow the straight segment between two ``xy`` points, lift it onto the
+        surface, and return the 3-D polyline length. This is useful and fast,
+        but it is not a shortest-path geodesic.
+    ``straight_pairwise_distances(points_xy=None, result=None, ...)``
+        Return a symmetric ``N × N`` matrix of straight-line surface distances.
+        If ``points_xy`` is omitted, cell centers are taken from the stored
+        result or from the ``result`` argument.
+    ``straight_distances_for_pairs(points_xy, pairs, ...)``
+        Compute distances only for selected index pairs, where ``pairs`` has
+        shape ``(n_pairs, 2)`` and indexes rows of ``points_xy``.
+
+    Construction helpers
+    --------------------
+    Use :meth:`from_result` when a DeProjPy result is available; it infers
+    ``pixel_size``, ``voxel_depth``, and ``units`` from the result. Use
+    :meth:`from_heightmap` when working from an external height map or exported
+    cell-center coordinates.
     """
 
     heightmap: np.ndarray
@@ -518,9 +508,9 @@ class SurfaceDistanceCalculator:
         calc = cls.from_heightmap(
             heightmap,
             pixel_size=pixel_size,
-            voxel_depth=1.0 if prepared else voxel_depth,
+            voxel_depth=1.0 if prepared else voxel_depth, # type: ignore
             prepared=prepared,
-            units=units,
+            units=units, # type: ignore
             smooth_scale=smooth_scale,
             invert_z=invert_z,
             inpaint_zeros=inpaint_zeros,
@@ -567,8 +557,8 @@ class SurfaceDistanceCalculator:
         """
         Return an ``N × N`` matrix of straight-line surface distances.
 
-        The implementation is Numba-accelerated when Numba is available. It
-        computes only the upper triangle and mirrors it to the lower triangle.
+        The implementation computes only the upper triangle and mirrors it to
+        the lower triangle.
         """
         del block_size, show_progress
         points = self._resolve_points(points_xy, result=result)
@@ -623,7 +613,7 @@ class SurfaceDistanceCalculator:
 
 
 def choose_surface_graph_step(
-    shape: tuple[int, int],
+    shape: tuple[int, ...],
     *,
     target_nodes: int = 80_000,
     min_step: int = 1,
@@ -675,24 +665,84 @@ class SurfaceGraph:
     """
     Sparse graph approximation to geodesic distances on a height-map surface.
 
-    Nodes are sampled ``(x, y)`` grid locations lifted onto the surface
-    ``(x, y, h(x, y))``. Edge weights are local 3-D distances in physical units.
-    Shortest paths are approximate graph geodesics, not exact continuous
-    geodesics.
+    ``SurfaceGraph`` represents a sampled version of the height-field surface
+    ``r(x, y) = (x, y, h(x, y))`` as a sparse weighted graph. Each graph node is
+    an ``(x, y)`` pixel location lifted to the surface, and each edge weight is
+    the local 3-D distance between two sampled surface points. Dijkstra shortest
+    paths on this graph approximate surface geodesic distances.
+
+    Parameters
+    ----------
+    graph : scipy.sparse.csr_matrix
+        Sparse adjacency matrix. Entry ``graph[i, j]`` is the physical 3-D
+        distance between sampled surface nodes ``i`` and ``j``. The graph is
+        treated as undirected by distance methods.
+    xy : np.ndarray
+        ``(n_nodes, 2)`` array of node coordinates in geometric ``(x, y)`` pixel
+        units. These are the coordinates returned in shortest paths.
+    z : np.ndarray
+        Height values for each node. Values are interpreted together with
+        ``voxel_depth`` when edge weights are constructed.
+    shape : tuple[int, int]
+        Shape of the original height map in array order ``(rows, columns)``.
+    step : int
+        Grid sampling step in pixels. ``step=1`` uses every pixel. Larger values
+        build smaller, faster, more approximate graphs. If constructed with
+        ``step="auto"``, the step is selected by :func:`choose_surface_graph_step`.
+    pixel_size : float
+        Physical size of one pixel in ``x`` and ``y``. Graph distances are
+        returned in these physical units.
+    voxel_depth : float
+        Physical scale factor for height values used during graph construction.
+        For prepared physical height maps this is typically ``1.0``.
+    connectivity : {"4", "8", "16"}
+        Neighborhood stencil used to add graph edges:
+
+        - ``"4"`` connects horizontal and vertical neighbors. It is fastest but
+          strongly grid-biased and gives Manhattan-like distances on flat
+          surfaces.
+        - ``"8"`` also connects diagonal neighbors. It is a good default for
+          many uses.
+        - ``"16"`` adds longer oblique moves such as ``(2, 1)`` and ``(1, 2)``.
+          It reduces directional bias at higher memory and compute cost.
+
+    Coordinate and unit conventions
+    -------------------------------
+    Public methods accept ``(x, y)`` pixel coordinates. Input points are snapped
+    to their nearest graph nodes before Dijkstra searches. Returned distances
+    are physical lengths using ``pixel_size`` for ``x/y`` and ``voxel_depth`` for
+    height differences as encoded in the graph edge weights. Returned paths are
+    arrays of ``(x, y)`` pixel coordinates along graph nodes, not physical
+    coordinates.
+
+    Construction helpers
+    --------------------
+    :meth:`from_calculator` builds a graph from a
+    :class:`SurfaceDistanceCalculator`, reusing its prepared height map and
+    scale factors. :meth:`from_heightmap` builds directly from a height map when
+    scale factors are supplied manually. The lower-level :func:`build_surface_graph`
+    function performs the same construction.
+
+    Notes
+    -----
+    Graph distances are approximate. They depend on ``step`` and
+    ``connectivity`` and should not be described as exact continuous geodesics.
+    For one source against many targets, prefer :meth:`distances_from_source`;
+    it runs one Dijkstra search and indexes the requested targets.
     """
 
     graph: sparse.csr_matrix
     xy: np.ndarray
     z: np.ndarray
-    shape: tuple[int, int]
+    shape: tuple[int, ...]
     step: int
     pixel_size: float
     voxel_depth: float
     connectivity: str
-    _tree: cKDTree = field(init=False, repr=False)
+    _tree: KDTree = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._tree = cKDTree(np.asarray(self.xy, dtype=float))
+        self._tree = KDTree(np.asarray(self.xy, dtype=float))
 
     @classmethod
     def from_calculator(
@@ -762,18 +812,24 @@ class SurfaceGraph:
         dist = dijkstra(self.graph, directed=False, indices=int(source))
         return float(dist[int(target)])
 
-    def distances_from_source(self, source_xy, target_xy: np.ndarray | None = None) -> np.ndarray:
+    def distances_from_source(
+        self,
+        source_xy_px,
+        target_xy_px: np.ndarray | None = None,
+    ) -> np.ndarray:
         """
-        Return graph-geodesic distances from one source to targets.
+        Return graph-geodesic distances from one source to targets. 
 
-        If ``target_xy`` is omitted, distances to every graph node are returned.
+        xy coordinates are in pixel units.
+
+        If ``target_xy_px`` is omitted, distances to every graph node are returned.
         Otherwise, targets are snapped to their nearest graph nodes.
         """
-        source = int(self.nearest_nodes(np.asarray([_validate_xy_point(source_xy)]))[0])
+        source = int(self.nearest_nodes(np.asarray([_validate_xy_point(source_xy_px)]))[0])
         dist = np.asarray(dijkstra(self.graph, directed=False, indices=source), dtype=float)
-        if target_xy is None:
+        if target_xy_px is None:
             return dist
-        targets = self.nearest_nodes(target_xy)
+        targets = self.nearest_nodes(target_xy_px)
         return dist[targets]
 
     def _path_from_predecessors(
@@ -871,7 +927,7 @@ def build_surface_graph(
 
     graph = sparse.coo_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes)).tocsr()
     return SurfaceGraph(
-        graph=graph,
+        graph=graph, # type: ignore (type casting not well documented)
         xy=xy,
         z=z,
         shape=h.shape,

@@ -709,7 +709,7 @@ def save_plots(
     plot_specs.extend(
         (
             f"{feature}_map.png",
-            lambda feature=feature: plot_feature_map(result, feature),
+            lambda feature=feature: plot_feature_map(result, feature), # type: ignore (result is not None)
         )
         for feature in features
     )

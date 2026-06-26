@@ -33,7 +33,7 @@ def test_straight_distance_on_planar_slope_matches_analytic_distance():
     assert np.isclose(measured, expected, rtol=1e-3)
 
 
-def test_numba_bilinear_sampler_matches_map_coordinates():
+def test_bilinear_sampler_matches_map_coordinates():
     y, x = np.mgrid[:5, :6]
     heightmap = (10 * y + x).astype(float)
     points = np.array(
