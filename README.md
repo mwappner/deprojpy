@@ -1,203 +1,198 @@
-# deprojpy
+# DeProjPy
 
-`deprojpy` is a behavioral Python port of the MATLAB DeProj
-`deproj.from_heightmap` workflow. It parses a segmented epithelial-cell mask,
-maps cell contours onto a height-map surface, computes corrected morphology,
-and exports the measurements.
+`deprojpy` is a Python implementation of the core [matlab project DeProj](https://gitlab.pasteur.fr/iah-public/DeProj) workflow: deproject segmented epithelial cell contours onto a height-map surface, compute 3D cell geometry, and estimate distances on the deprojected surface.
 
-This package is validated with synthetic invariants and the original DeProj
-sample images. It is not yet certified against MATLAB golden outputs.
+
+The goal is not GUI parity with MATLAB. The focus is a scriptable Python API for deprojection, feature measurement, plotting, and surface-distance calculations.
 
 ## Installation
 
-From a local checkout:
+Install directly from GitHub:
 
 ```bash
-python -m pip install -e '.[test]'
+python -m pip install git+https://github.com/mwappner/deprojpy.git
+```
+
+For development, clone the repository and install it in editable mode:
+
+```bash
+git clone https://github.com/mwappner/deprojpy.git
+cd deprojpy
+python -m pip install -e ".[test]"
 python -m pytest
-python -m compileall deprojpy
 ```
 
-The test suite uses the local sample TIFF files under `samples/`.
-
-## Python usage
-
-```python
-import deprojpy as dp
-
-mask, heightmap = dp.load_tiff_pair(
-    "Segmentation-2.tif",
-    "HeightMap-2.tif",
-)
-result = dp.from_heightmap(
-    mask,
-    heightmap,
-    pixel_size=0.183,
-    voxel_depth=1.0,
-    units="µm",
-    invert_z=True,
-    inpaint_zeros=True,
-    prune_zeros=True,
-)
-
-df = result.to_dataframe()
-result.to_csv("measurements.csv")
-```
-
-Input arrays use image indexing `(row, column)`. Returned boundaries, centers,
-and junction centroids use geometric `(x, y, z)` order in the selected physical
-units.
-
-The segmentation must be a binary-like image with black/zero connected ridges
-and one nonzero value for cell interiors. The height map must be a 2-D image of
-the same shape whose values encode the tissue's Z position.
-
-## Labeled-image input
-
-For label images where each pixel stores a cell ID, install the sibling
-`labelimage-tools` package locally and use `from_labels`:
+The label-image workflow requires the companion `labelimage-tools` package:
 
 ```bash
-python -m pip install -e /home/mw/Documents/Pasteur/Code/tissue_processing/labelimage-tools
+python -m pip install git+https://github.com/mwappner/labelimage-tools.git
 ```
 
-```python
-import deprojpy as dp
+## Quick start: DeProj-style mask input
 
-labels, heightmap = dp.load_label_heightmap_pair(
-    "samples/Labels-2.tif",
-    "samples/HeightMap-2.tif",
-)
-result = dp.from_labels(
-    labels,
-    heightmap,
-    pixel_size=0.183,
-    voxel_depth=1.0,
-    units="µm",
-    invert_z=True,
-)
-df = result.to_dataframe()
-```
-
-The labeled path starts from detailed label contours, not simplified
-vertex-model polygons. Cell boundaries are then simplified in pixel coordinates
-before height-map sampling; the internal default tolerance is 0.5 px, so this
-step is independent of physical `pixel_size`. Junctions are detected from 3×3
-label neighborhoods; subpixel junction centroids become graph nodes; cells are
-associated to junctions by label membership and ordered along their contour.
-Original segmentation IDs are preserved as `source_label` in the result
-dataframe.
-
-## Surface distances
-
-DeProjPy also includes reusable calculators for distances constrained to the
-height-map surface. A straight-line surface distance samples the height map along
-the straight segment in `xy` and measures the lifted 3-D polyline. This is fast
-and useful for all-pairs cell-center distances, but it is not a true geodesic.
-For approximate geodesics, build a sparse `SurfaceGraph`; `connectivity="8"` is
-a good default, while `"16"` reduces grid-direction bias at higher cost.
-
-```python
-from deprojpy.surface_distance import (
-    SurfaceDistanceCalculator,
-    SurfaceGraph,
-    cell_centers_xy_pixels,
-)
-
-calc = SurfaceDistanceCalculator.from_result(
-    result,
-    heightmap,
-    prepared=False,
-    invert_z=True,
-)
-boundary_calc = SurfaceDistanceCalculator.from_cell_boundaries(
-    result,
-    method="linear",
-    extrapolation="linear",
-)
-centers = cell_centers_xy_pixels(result)
-
-d_heightmap = calc.straight_distance(centers[10], centers[200])
-d_boundary = boundary_calc.straight_distance(centers[10], centers[200])
-graph = SurfaceGraph.from_calculator(boundary_calc, step="auto", connectivity="16")
-d_graph, path_xy = graph.distance(centers[10], centers[200], return_path=True)
-D = calc.straight_pairwise_distances(centers[:100])
-```
-
-Use `SurfaceDistanceCalculator.from_result(...)` when you have a DeProj result,
-so pixel size, units, and height-map preparation stay consistent while the
-surface is still built from a height map. Use
-`SurfaceDistanceCalculator.from_cell_boundaries(result)` when path
-visualization or distance calculations should follow a raster surface
-interpolated from the deprojected cell-boundary `(x, y, z)` points instead of
-the original height map; `method` controls the scattered interpolation and
-`extrapolation` controls how pixels outside the boundary-point convex hull are
-filled. If you only have exported cell centers or external point arrays, use
-`SurfaceDistanceCalculator.from_heightmap(...)` and pass `pixel_size` and
-`voxel_depth` manually. All-pairs graph geodesics are intentionally not computed
-by default; use `SurfaceGraph.distances_from_source(...)` when comparing one
-source to many targets.
-
-Consult the cookbook in [`docs/cookbook.md`](docs/cookbook.md) for
-copy-pastable Python snippets: exporting measurements, saving plots,
-customizing feature maps, composing plots on matplotlib axes, and checking
-whether a run looks sane.
-
-## Optional command line helper
-
-The command-line entry point is useful for quick smoke checks, but it is not the
-main API surface.
-
-```bash
-deprojpy-smoke \
-  samples/Segmentation-2.tif \
-  samples/HeightMap-2.tif \
-  --pixel-size 0.183 \
-  --voxel-depth 1.0 \
-  --units µm \
-  --invert-z \
-  --csv measurements.csv
-```
-
-Add `--plots plots/` to save mask, height-map, feature-map,
-histogram, and 3-D-boundary PNGs.
-
-For labeled images:
-
-```bash
-deprojpy-smoke labels samples/Labels-2.tif samples/HeightMap-2.tif --csv labels.csv
-```
-
-## Plots and plotting
+The MATLAB-style workflow starts from a binary-like segmentation mask and a height map. In the mask image, cell interiors are non-zero and cell borders are zero-valued ridges.
 
 ```python
 import deprojpy as dp
 
 mask, heightmap = dp.load_tiff_pair("samples/Segmentation-2.tif", "samples/HeightMap-2.tif")
-result = dp.from_heightmap(mask, heightmap, pixel_size=0.183, units="µm")
-paths = dp.save_plots(
-    "plots",
-    mask,
-    heightmap,
-    result,
-    features=("area", "eccentricity"),
-)
+result = dp.from_heightmap(mask, heightmap,
+    pixel_size=0.183, voxel_depth=1.0, units="µm",
+    invert_z=True, inpaint_zeros=True, prune_zeros=True)
+
+df = result.to_dataframe()
+result.to_csv("measurements.csv")
 ```
 
-Plotting helpers in `deprojpy.plotting` accept optional matplotlib axes, so
-they can be used directly in scripts and notebooks without calling
-`plt.show()`.
+Returned boundaries, centers, and junction centroids use geometric `(x, y, z)` order in physical units. Input images still use normal image indexing `(row, column)`.
+
+Plot a scalar feature on the deprojected cell polygons:
+
+```python
+fig, ax = dp.plotting.plot_feature_map(result, "area")
+fig, ax = dp.plotting.plot_heightmap_with_centers(heightmap, result)
+```
+
+<p align="center">
+  <img src="examples/output/plots/area_map.png" width="70%">
+</p>
+<p align="center">
+  <img src="examples/output/plots/heightmap_centers.png" width="70%">
+</p>
+
+## Why deproject?
+
+Measurements made directly on the 2D segmentation image can underestimate cell
+geometry when the tissue surface is curved or tilted. DeProjPy measures cell
+contours after lifting them onto the height-map surface, so quantities such as
+area and perimeter are reported in surface-corrected physical units.
+
+A useful diagnostic is the relative area difference between the deprojected
+surface area and the original projected 2D area:
+
+```python
+fig, ax = dp.plotting.plot_relative_error_map(result, 'area')
+```
+
+<p align="center">
+  <img src="docs/images/relative_area_error.jpg" width="70%">
+</p>
+
+Positive values indicate cells whose surface-corrected area is larger than their
+projected 2D area. This is the geometric correction DeProj is designed to make
+visible and measurable.
+
+## Alternative input: labeled segmentations
+
+DeProjPy is modernized compared to the Matlab version, as it can also start from an integer label image, where each cell has a unique label and background is zero. This is useful for outputs from segmentation pipelines that already return labels rather than DeProj-style ridge masks, such as [FishFeats](https://gletort.github.io/FishFeats/).
+
+| DeProj-style mask | Label image |
+|---|---|
+| `from_heightmap(mask, heightmap, ...)` | `from_labels(labels, heightmap, ...)` |
+| Cell interiors are non-zero; borders are zero. | Each cell has a unique integer label; background is zero. |
+
+<p align="center">
+  <img src="docs/images/mask_input.png" width="42%">
+  <img src="docs/images/labels_input.png" width="42%">
+</p>
+
+```python
+import deprojpy as dp
+
+labels, heightmap = dp.load_label_heightmap_pair("samples/Labels-2.tif", "samples/HeightMap-2.tif")
+result = dp.from_labels(labels, heightmap,
+    pixel_size=0.183, voxel_depth=1.0, units="µm",
+    invert_z=True, inpaint_zeros=True, prune_zeros=True)
+
+df = result.to_dataframe()
+```
+
+The label workflow returns the same kind of `DeprojResult` as the mask workflow. Original label IDs are preserved as `source_label` when available.
+
+## Surface distances
+
+DeProjPy introduces new reusable tools for distances constrained to a surface.
+
+There are two main distance ideas:
+
+- **straight surface distance**: sample the surface along the straight segment in
+  `xy` and measure the lifted 3D polyline;
+- **graph geodesic distance**: build a sparse surface graph and compute shortest
+  paths on the graph. This is an approximation to the continuous geodesic.
+
+For plotting paths on the fitted DeProj cell-contour surface, build the calculator from cell boundaries:
+
+```python
+import numpy as np
+from deprojpy.surface_distance import SurfaceDistanceCalculator, SurfaceGraph
+
+centers = df[["center_x", "center_y"]].to_numpy()
+
+calc = SurfaceDistanceCalculator.from_cell_boundaries(result)
+d_straight = calc.straight_distance(centers[10], centers[200], input_units="physical")
+
+graph = SurfaceGraph.from_calculator(calc, step="auto", connectivity="16")
+d_graph, path_px = graph.distance(centers[10], centers[200],
+    input_units="physical", return_path=True)
+```
+
+For all-pairs straight surface distances between cell centers:
+
+```python
+D = calc.straight_pairwise_distances(centers, input_units="physical")
+```
+
+Graph paths are returned in pixel coordinates, matching graph nodes. To plot them in 3D, sample the calculator surface and convert xy back to physical units:
+
+```python
+path_z = calc.sample_height(path_px, input_units="pixel")
+path_xyz = np.column_stack([path_px * result.pixel_size, path_z])
+```
+
+<p align="center">
+  <img src="docs/images/3D_distance.png" width="100%">
+</p>
+
+Use `SurfaceDistanceCalculator.from_result(...)` when you want distances on the prepared height-map surface. Use `SurfaceDistanceCalculator.from_cell_boundaries(...)` when you want paths and distances on the fitted surface represented by the deprojected cell contours.
+
+## What is in a result?
+
+A `DeprojResult` contains:
+
+- `result.epicells`: one `EpiCell` per retained cell;
+- `result.to_dataframe()`: a tabular summary of cell features;
+- `result.prepared_heightmap`: the height map used for deprojection;
+- deprojected boundaries, centers, junctions, and geometry in physical units.
+
+The most common workflow is:
+
+```python
+result = dp.from_heightmap(mask, heightmap, ...)
+df = result.to_dataframe()
+```
+
+or:
+
+```python
+result = dp.from_labels(labels, heightmap, ...)
+df = result.to_dataframe()
+```
+
+## More examples
+
+See [`docs/cookbook.md`](docs/cookbook.md) and the scripts in [`examples/`](examples/) for copy-pastable workflows covering plotting, diagnostics, label inputs, exports, curvature maps, and surface distances.
 
 ## Validation status
 
-With the original sample files, the expected result is:
+The Python implementation is tested with synthetic invariants and the original DeProj sample images. It is not yet certified against MATLAB golden outputs.
+
+With the original sample files, expected smoke-check values include:
 
 - image shape `(282, 508)`;
 - 426 retained cells;
-- 920 actual junction graph nodes;
 - finite positive cell areas and perimeters.
 
-The original MATLAB README prints 1,840 junctions because MATLAB `numel`
-counts both columns of its 920-by-2 node table. Numerical parity with MATLAB
-ellipse fits and other measurements remains to be checked against future
-golden outputs.
+## License
+
+This repository is currently intended for internal research use. Add or update a
+license file before external redistribution.

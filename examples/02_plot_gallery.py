@@ -84,15 +84,18 @@ def make_gallery(
         frame,
         features=("area", "eccentricity"),
         dpi=dpi,
+        figsize=(6, 3)
     )
 
+    # plot 3D boundaries
     figure, ax = plot_3d_boundaries(result, "area")
     ax.view_init(azim=115, elev=1)  # type: ignore[attr-defined]
     boundary_path = plot_dir / "boundaries_3d.png"
     figure.savefig(boundary_path, dpi=dpi, bbox_inches="tight")
     plt.close(figure)
 
-    fig, axes = plt.subplots(1, 2, figsize=(9, 4))
+    # plot custom feature maps
+    fig, axes = plt.subplots(1, 2, figsize=(9, 4), layout="constrained")
     plot_feature_map(
         result,
         "eccentricity",
@@ -106,32 +109,35 @@ def make_gallery(
         "n_neighbors",
         ax=axes[1],
         title="Neighbor count",
-        cmap="magma",
-        edgecolor="white",
-        linewidth=0.1,
+        cmap="tab10",
+        edgecolor="k",
+        linewidth=0.4,
     )
     fig.suptitle("Custom feature-map subplots")
-    fig.tight_layout()
     custom_path = plot_dir / "custom_feature_maps.png"
     fig.savefig(custom_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     paths.append(custom_path)
 
-    fig, ax = plot_feature_map(
+    # plot neighbor count map
+    fig, ax = plt.subplots(figsize=(6, 4), layout="constrained")
+    plot_feature_map(
         result,
         "n_neighbors",
         title="Neighbor count",
-        cmap="magma",
-        edgecolor="white",
-        linewidth=0.1,
+        cmap="tab10",
+        edgecolor="k",
+        linewidth=0.4,
         colorbar_label="neighbors",
+        ax=ax
     )
     neighbor_path = plot_dir / "neighbor_map.png"
     fig.savefig(neighbor_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     paths.append(neighbor_path)
 
-    fig, axes = plt.subplots(2, 2, figsize=(10, 8), layout="constrained")
+    # plot absolute and relative error maps
+    fig, axes = plt.subplots(2, 2, figsize=(10, 6), layout="constrained")
     plot_feature_map(
         result,
         "area_error",

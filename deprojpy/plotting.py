@@ -685,6 +685,7 @@ def save_plots(
     labels: np.ndarray | None = None,
     features=("area",),
     dpi: int = 150,
+    figsize=None,
     close: bool = True,
 ) -> list[Path]:
     """Save the standard plot bundle and return written paths."""
@@ -696,27 +697,28 @@ def save_plots(
         dataframe = result.to_dataframe()
 
     plot_specs = [
-        ("heightmap_centers.png", lambda: plot_heightmap_with_centers(heightmap, result)),
-        ("feature_histograms.png", lambda: plot_feature_histograms(dataframe)),
-        ("boundaries_3d.png", lambda: plot_3d_boundaries(result, "area")),
+        ("heightmap_centers.png", lambda ax: plot_heightmap_with_centers(heightmap, result, ax=ax)),
+        ("feature_histograms.png", lambda ax: plot_feature_histograms(dataframe)),
+        ("boundaries_3d.png", lambda ax: plot_3d_boundaries(result, "area")),
     ]
     if labels is not None:
-        plot_specs.insert(0, ("label_objects.png", lambda: plot_label_objects(labels, result)))
+        plot_specs.insert(0, ("label_objects.png", lambda ax: plot_label_objects(labels, result, ax=ax)))
     elif mask is not None:
-        plot_specs.insert(0, ("mask_objects.png", lambda: plot_mask_objects(mask, result)))
+        plot_specs.insert(0, ("mask_objects.png", lambda ax: plot_mask_objects(mask, result, ax=ax)))
     else:
         raise ValueError("save_plots requires either mask=... or labels=...")
     plot_specs.extend(
         (
             f"{feature}_map.png",
-            lambda feature=feature: plot_feature_map(result, feature), # type: ignore (result is not None)
+            lambda ax, feature=feature: plot_feature_map(result, feature, ax=ax), # type: ignore (result is not None)
         )
         for feature in features
     )
 
     written = []
     for filename, make_plot in plot_specs:
-        figure, _ = make_plot()
+        _, ax = plt.subplots(figsize=figsize, layout="constrained")
+        figure, _ = make_plot(ax)
         path = directory / filename
         figure.savefig(path, dpi=dpi, bbox_inches="tight")
         if close:
