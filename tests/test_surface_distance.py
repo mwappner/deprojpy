@@ -8,15 +8,15 @@ from deprojpy.models import Epicell
 from deprojpy.surface_distance import (
     SurfaceDistanceCalculator,
     SurfaceGraph,
-    _as_pixel_xy,
-    _average_duplicate_xy,
-    _bilinear_sample,
     cell_centers_xy_pixels,
     choose_surface_graph_step,
     heightmap_from_cell_boundaries,
     sample_height_at_xy,
     surface_straight_distance,
 )
+from deprojpy.surface_distance._boundary_surface import _average_duplicate_xy
+from deprojpy.surface_distance._helpers import _as_pixel_xy
+from deprojpy.surface_distance._straight import _bilinear_sample
 
 
 def test_as_pixel_xy_converts_physical_coordinates_and_rejects_invalid_units():
