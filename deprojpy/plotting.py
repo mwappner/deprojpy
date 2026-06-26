@@ -62,6 +62,12 @@ def _cell_feature_value(cell, feature: str) -> float:
     if feature in FEATURE_COMPONENTS:
         attr, idx = FEATURE_COMPONENTS[feature]
         return float(np.asarray(getattr(cell, attr))[idx])
+    if not hasattr(cell, feature):
+        valid = sorted(EPICELL_FEATURES | set(FEATURE_COMPONENTS))
+        raise ValueError(
+            f"unknown Epicell feature {feature!r}; valid features are:\n  "
+            + "\n  ".join(valid)
+        )
 
     value = getattr(cell, feature)
     arr = np.asarray(value)
@@ -701,7 +707,10 @@ def save_plots(
     else:
         raise ValueError("save_plots requires either mask=... or labels=...")
     plot_specs.extend(
-        (f"{feature}_map.png", lambda feature=feature: plot_feature_map(result, feature)) # type: ignore (results is not None here)
+        (
+            f"{feature}_map.png",
+            lambda feature=feature: plot_feature_map(result, feature),
+        )
         for feature in features
     )
 

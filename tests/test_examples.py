@@ -19,6 +19,7 @@ def test_script_examples_can_be_called_from_python(tmp_path, deproj_samples):
     gallery = _load_example(repository / "examples" / "02_plot_gallery.py")
     labeled_run = _load_example(repository / "examples" / "03_run_labeled_sample.py")
     labeled_plots = _load_example(repository / "examples" / "04_label_plots.py")
+    surface_distances = _load_example(repository / "examples" / "05_surface_distances.py")
 
     _, frame, csv_path = run_sample.run_sample(
         deproj_samples / "Segmentation-2.tif",
@@ -53,3 +54,13 @@ def test_script_examples_can_be_called_from_python(tmp_path, deproj_samples):
         "boundaries_3d.png",
         "label_objects_custom.png",
     }
+
+    surface_output = surface_distances.run_surface_distance_example(
+        deproj_samples / "Labels-2.tif",
+        deproj_samples / "HeightMap-2.tif",
+        tmp_path / "surface_distances",
+        dpi=80,
+    )
+    assert surface_output["path_plot"].is_file()
+    assert surface_output["pairwise"].shape[0] <= 100
+    assert surface_output["distances"]["straight_surface"] > 0

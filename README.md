@@ -88,7 +88,48 @@ associated to junctions by label membership and ordered along their contour.
 Original segmentation IDs are preserved as `source_label` in the result
 dataframe.
 
-Consult to cookbook in [`docs/cookbook.md`](docs/cookbook.md) for copy-pastable Python snippets: exporting measurements, saving plots, customizing feature maps, composing plots on matplotlib axes, and checking whether a run looks sane.
+## Surface distances
+
+DeProjPy also includes reusable calculators for distances constrained to the
+height-map surface. A straight-line surface distance samples the height map along
+the straight segment in `xy` and measures the lifted 3-D polyline. This is fast
+and useful for all-pairs cell-center distances, but it is not a true geodesic.
+For approximate geodesics, build a sparse `SurfaceGraph`; `connectivity="8"` is
+a good default, while `"16"` reduces grid-direction bias at higher cost.
+
+```python
+from deprojpy.surface_distance import (
+    SurfaceDistanceCalculator,
+    SurfaceGraph,
+    cell_centers_xy_pixels,
+)
+
+calc = SurfaceDistanceCalculator.from_result(
+    result,
+    heightmap,
+    prepared=False,
+    invert_z=True,
+)
+centers = cell_centers_xy_pixels(result)
+
+d_straight = calc.straight_distance(centers[10], centers[200])
+graph = SurfaceGraph.from_calculator(calc, step="auto", connectivity="16")
+d_graph, path_xy = graph.distance(centers[10], centers[200], return_path=True)
+D = calc.straight_pairwise_distances(centers[:100])
+```
+
+Use `SurfaceDistanceCalculator.from_result(...)` when you have a DeProj result,
+so pixel size, units, and height-map preparation stay consistent. If you only
+have exported cell centers or external point arrays, use
+`SurfaceDistanceCalculator.from_heightmap(...)` and pass `pixel_size` and
+`voxel_depth` manually. All-pairs graph geodesics are intentionally not computed
+by default; use `SurfaceGraph.distances_from_source(...)` when comparing one
+source to many targets.
+
+Consult the cookbook in [`docs/cookbook.md`](docs/cookbook.md) for
+copy-pastable Python snippets: exporting measurements, saving plots,
+customizing feature maps, composing plots on matplotlib axes, and checking
+whether a run looks sane.
 
 ## Optional command line helper
 

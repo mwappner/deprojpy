@@ -147,6 +147,51 @@ python examples/03_run_labeled_sample.py
 python examples/04_label_plots.py
 ```
 
+## Estimate distances along the surface
+
+Use surface distances when Euclidean distance through space is not the quantity
+you want. The straight-line method lifts a straight `xy` segment onto the height
+map and is fast enough for all-pairs matrices. The graph method builds a sparse
+sampled surface graph and returns approximate geodesic shortest paths.
+
+```python
+import numpy as np
+
+from deprojpy.surface_distance import (
+    SurfaceDistanceCalculator,
+    SurfaceGraph,
+    cell_centers_xy_pixels,
+)
+
+calc = SurfaceDistanceCalculator.from_result(
+    result,
+    heightmap,
+    prepared=False,
+    invert_z=True,
+)
+centers = cell_centers_xy_pixels(result)
+
+i, j = 10, 200
+p0, p1 = centers[i], centers[j]
+
+d_xy = np.linalg.norm((p1 - p0) * result.pixel_size)
+d_straight = calc.straight_distance(p0, p1)
+
+graph = SurfaceGraph.from_calculator(calc, step="auto", connectivity="16")
+d_graph, path_xy = graph.distance(p0, p1, return_path=True)
+
+subset = centers[:100]
+D = calc.straight_pairwise_distances(subset)
+
+print(f"2D xy distance:                 {d_xy:.3f} {calc.units}")
+print(f"Straight-line surface distance: {d_straight:.3f} {calc.units}")
+print(f"Graph-geodesic distance:        {d_graph:.3f} {calc.units}")
+print(f"Pairwise matrix shape:          {D.shape}")
+```
+
+Run `python examples/05_surface_distances.py` for a complete script that also
+plots the straight segment and graph shortest path.
+
 ## Color cells by a different feature
 
 Feature maps are useful when you want to inspect spatial patterns rather than

@@ -7,10 +7,26 @@ from .labels import labels_to_objects
 from .mask import mask_to_objects
 from .models import DeprojResult, Epicell
 from .plotting import save_plots
+from .surface_distance import (
+    SurfaceDistanceCalculator,
+    SurfaceGraph,
+    build_surface_graph,
+    cell_centers_xy_pixels,
+    choose_surface_graph_step,
+    sample_height_at_xy,
+    surface_graph_cell_distance,
+    surface_straight_cell_distance,
+    surface_straight_distance,
+)
 
 __all__ = [
     "DeprojResult",
     "Epicell",
+    "SurfaceDistanceCalculator",
+    "SurfaceGraph",
+    "build_surface_graph",
+    "cell_centers_xy_pixels",
+    "choose_surface_graph_step",
     "compute_curvatures",
     "from_heightmap",
     "from_labels",
@@ -20,5 +36,9 @@ __all__ = [
     "load_tiff_pair",
     "mask_to_objects",
     "prepare_heightmap",
+    "sample_height_at_xy",
     "save_plots",
+    "surface_graph_cell_distance",
+    "surface_straight_cell_distance",
+    "surface_straight_distance",
 ]

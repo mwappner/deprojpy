@@ -17,6 +17,7 @@ dependencies = [
   "networkx>=3.0",
   "tifffile>=2023.0",
   "matplotlib>=3.7",
+  "numba>=0.57",
 ]
 
 [project.optional-dependencies]
