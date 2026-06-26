@@ -189,6 +189,14 @@ print(f"Graph-geodesic distance:        {d_graph:.3f} {calc.units}")
 print(f"Pairwise matrix shape:          {D.shape}")
 ```
 
+`from_result(...)` uses result metadata but still builds the surface from a
+height map. If you want distances to follow a raster surface interpolated from
+the already deprojected cell-boundary `(x, y, z)` points, use:
+
+```python
+calc = SurfaceDistanceCalculator.from_cell_boundaries(result)
+```
+
 Run `python examples/05_surface_distances.py` for a complete script that also
 plots the straight segment and graph shortest path.
 

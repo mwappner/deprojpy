@@ -119,8 +119,13 @@ D = calc.straight_pairwise_distances(centers[:100])
 ```
 
 Use `SurfaceDistanceCalculator.from_result(...)` when you have a DeProj result,
-so pixel size, units, and height-map preparation stay consistent. If you only
-have exported cell centers or external point arrays, use
+so pixel size, units, and height-map preparation stay consistent while the
+surface is still built from a height map. Use
+`SurfaceDistanceCalculator.from_cell_boundaries(result)` when path
+visualization or distance calculations should follow a raster surface
+interpolated from the deprojected cell-boundary `(x, y, z)` points instead of
+the original height map. If you only have exported cell centers or external
+point arrays, use
 `SurfaceDistanceCalculator.from_heightmap(...)` and pass `pixel_size` and
 `voxel_depth` manually. All-pairs graph geodesics are intentionally not computed
 by default; use `SurfaceGraph.distances_from_source(...)` when comparing one

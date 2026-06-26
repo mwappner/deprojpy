@@ -8,9 +8,11 @@ from deprojpy.models import Epicell
 from deprojpy.surface_distance import (
     SurfaceDistanceCalculator,
     SurfaceGraph,
+    _average_duplicate_xy,
     _bilinear_sample,
     cell_centers_xy_pixels,
     choose_surface_graph_step,
+    heightmap_from_cell_boundaries,
     sample_height_at_xy,
     surface_straight_distance,
 )
@@ -163,11 +165,11 @@ def test_surface_graph_distances_from_source_matches_individual_calls():
     assert np.allclose(distances, expected)
 
 
-def _cell(center):
+def _cell(center, boundary=None):
     return Epicell(
         id=1,
         source_label=None,
-        boundary=np.zeros((4, 3)),
+        boundary=np.zeros((4, 3)) if boundary is None else np.asarray(boundary, dtype=float),
         center=np.asarray(center, dtype=float),
         junction_ids=np.array([], dtype=int),
         n_neighbors=0,
@@ -213,3 +215,115 @@ def test_surface_distance_calculator_from_result_infers_metadata():
     assert calc.voxel_depth == 1.0
     assert calc.units == "µm"
     assert calc.prepared
+
+
+def _plane_z(x, y):
+    return 2.0 * x + 3.0 * y + 5.0
+
+
+def _plane_boundary(points_xy):
+    points = np.asarray(points_xy, dtype=float)
+    z = _plane_z(points[:, 0], points[:, 1])
+    return np.column_stack([points, z])
+
+
+def _plane_result(*, shape=(20, 30), pixel_size=1.0, units="µm"):
+    outer = _plane_boundary(
+        [
+            [2, 2],
+            [17, 2],
+            [17, 13],
+            [2, 13],
+        ]
+    )
+    inner = _plane_boundary(
+        [
+            [8, 8],
+            [24, 8],
+            [24, 17],
+            [8, 17],
+        ]
+    )
+    return FakeResult(
+        epicells=[_cell([0, 0, 0], outer), _cell([0, 0, 0], inner)],
+        pixel_size=pixel_size,
+        units=units,
+        prepared_heightmap=np.zeros(shape, dtype=float),
+    )
+
+
+def test_heightmap_from_cell_boundaries_uses_prepared_heightmap_shape():
+    result = _plane_result(shape=(20, 30))
+    surface = heightmap_from_cell_boundaries(result)
+    assert surface.shape == result.prepared_heightmap.shape
+    assert np.isfinite(surface).all()
+
+
+def test_heightmap_from_cell_boundaries_recovers_planar_surface():
+    result = _plane_result(shape=(10, 12))
+    surface = heightmap_from_cell_boundaries(
+        result,
+        method="linear",
+        extrapolation="linear",
+    )
+    for y, x in [(0, 0), (3, 4), (8, 10)]:
+        assert np.isclose(surface[y, x], _plane_z(x, y), atol=1e-10)
+
+
+def test_surface_distance_calculator_from_cell_boundaries_metadata():
+    result = _plane_result(pixel_size=0.5, units="µm")
+    calc = SurfaceDistanceCalculator.from_cell_boundaries(result)
+    assert calc.result is result
+    assert calc.pixel_size == result.pixel_size
+    assert calc.voxel_depth == 1.0
+    assert calc.units == result.units
+    assert calc.prepared is True
+
+
+def test_surface_distance_calculator_samples_boundary_surface():
+    result = _plane_result(shape=(12, 12))
+    calc = SurfaceDistanceCalculator.from_cell_boundaries(result)
+    xy = np.array([[4.0, 5.0], [10.0, 9.0]])
+    assert np.allclose(calc.sample_height(xy), _plane_z(xy[:, 0], xy[:, 1]))
+
+
+def test_average_duplicate_xy_averages_z_values():
+    xy = np.array([[0, 0], [1, 1], [0, 0], [2, 0]], dtype=float)
+    z = np.array([1.0, 5.0, 3.0, 7.0])
+    unique_xy, averaged_z = _average_duplicate_xy(xy, z)
+    values = {tuple(point): value for point, value in zip(unique_xy, averaged_z, strict=True)}
+    assert values[(0.0, 0.0)] == 2.0
+    assert values[(1.0, 1.0)] == 5.0
+    assert values[(2.0, 0.0)] == 7.0
+
+
+def test_heightmap_from_cell_boundaries_extrapolation_modes():
+    boundary = _plane_boundary([[2, 2], [5, 2], [5, 5], [2, 5]])
+    result = FakeResult(
+        epicells=[_cell([0, 0, 0], boundary)],
+        pixel_size=1.0,
+        units="µm",
+        prepared_heightmap=np.zeros((8, 8)),
+    )
+
+    none = heightmap_from_cell_boundaries(result, extrapolation="none")
+    nearest = heightmap_from_cell_boundaries(result, extrapolation="nearest")
+    constant = heightmap_from_cell_boundaries(
+        result,
+        extrapolation="constant",
+        fill_value=-1.0,
+    )
+    linear = heightmap_from_cell_boundaries(result, extrapolation="linear")
+
+    assert np.isnan(none[0, 0])
+    assert np.isfinite(nearest).all()
+    assert constant[0, 0] == -1.0
+    assert np.isclose(linear[0, 0], _plane_z(0, 0), atol=1e-10)
+
+
+def test_heightmap_from_cell_boundaries_rejects_invalid_options():
+    result = _plane_result()
+    with np.testing.assert_raises(ValueError):
+        heightmap_from_cell_boundaries(result, method="cubic")
+    with np.testing.assert_raises(ValueError):
+        heightmap_from_cell_boundaries(result, extrapolation="mystery")

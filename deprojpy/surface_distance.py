@@ -7,6 +7,11 @@ from dataclasses import dataclass, field
 import numpy as np
 from numba import njit, prange
 from scipy import sparse
+from scipy.interpolate import (
+    CloughTocher2DInterpolator,
+    LinearNDInterpolator,
+    NearestNDInterpolator,
+)
 from scipy.ndimage import map_coordinates
 from scipy.sparse.csgraph import dijkstra
 from scipy.spatial import KDTree
@@ -333,6 +338,137 @@ def cell_centers_xy_pixels(result) -> np.ndarray:
     return centers.reshape(-1, 2) / pixel_size
 
 
+def _average_duplicate_xy(points_xy: np.ndarray, z: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Average z-values for exact duplicate xy coordinates."""
+    points = _validate_xy_array(points_xy, name="points_xy")
+    values = np.asarray(z, dtype=float)
+    if values.ndim != 1 or len(values) != len(points):
+        raise ValueError("z must be a 1-D array with one value per xy point")
+    unique_xy, inverse = np.unique(points, axis=0, return_inverse=True)
+    sums = np.bincount(inverse, weights=values)
+    counts = np.bincount(inverse)
+    return unique_xy, sums / counts
+
+
+def _boundary_interpolator(method: str, points_xy: np.ndarray, z: np.ndarray):
+    if method == "linear":
+        return LinearNDInterpolator(points_xy, z, fill_value=np.nan)
+    if method in {"clough", "clough_tocher"}:
+        return CloughTocher2DInterpolator(points_xy, z, fill_value=np.nan)
+    if method == "nearest":
+        return NearestNDInterpolator(points_xy, z)
+    raise ValueError("method must be one of 'linear', 'clough', 'clough_tocher', or 'nearest'")
+
+
+def _linear_plane_extrapolate(
+    points_xy: np.ndarray,
+    z: np.ndarray,
+    grid_xy: np.ndarray,
+) -> np.ndarray:
+    """Evaluate the least-squares plane fitted to scattered xyz samples."""
+    design = np.column_stack([points_xy[:, 0], points_xy[:, 1], np.ones(len(points_xy))])
+    coeffs, *_ = np.linalg.lstsq(design, z, rcond=None)
+    grid_design = np.column_stack([grid_xy[:, 0], grid_xy[:, 1], np.ones(len(grid_xy))])
+    return grid_design @ coeffs
+
+
+def heightmap_from_cell_boundaries(
+    result,
+    *,
+    shape: tuple[int, ...] | None = None,
+    method: str = "linear",
+    extrapolation: str = "linear",
+    fill_value: float | None = None,
+) -> np.ndarray:
+    """
+    Interpolate a raster height map from deprojected cell-boundary points.
+
+    Parameters
+    ----------
+    result
+        DeProjPy result-like object with ``epicells`` and ``pixel_size``.
+        Each cell must provide ``boundary`` coordinates in physical
+        ``(x, y, z)`` order.
+    shape : tuple[int, int], optional
+        Output shape in array ``(rows, columns)`` order. If omitted,
+        ``result.prepared_heightmap.shape`` is used when available. Otherwise a
+        minimal shape is inferred from the maximum boundary pixel coordinates.
+    method : {"linear", "clough", "clough_tocher", "nearest"}, optional
+        Scattered interpolation method used inside the convex hull of boundary
+        points. ``"linear"`` is the default.
+    extrapolation : {"linear", "nearest", "constant", "none"}, optional
+        How to fill grid points not covered by the scattered interpolator.
+        ``"linear"`` fits a least-squares plane to all boundary points,
+        ``"nearest"`` uses nearest-neighbor interpolation, ``"constant"`` uses
+        ``fill_value``, and ``"none"`` leaves missing values as ``NaN``.
+    fill_value : float, optional
+        Constant value used when ``extrapolation="constant"``. If omitted,
+        missing values are filled with ``NaN``.
+
+    Returns
+    -------
+    np.ndarray
+        Interpolated height map in physical z units.
+    """
+    if extrapolation not in {"linear", "nearest", "constant", "none"}:
+        raise ValueError("extrapolation must be one of 'linear', 'nearest', 'constant', or 'none'")
+    pixel_size = _validate_positive(getattr(result, "pixel_size"), "result.pixel_size")
+    boundaries = []
+    for cell in getattr(result, "epicells", []):
+        boundary = np.asarray(cell.boundary, dtype=float)
+        if boundary.ndim != 2 or boundary.shape[1] < 3:
+            raise ValueError("each cell boundary must have shape (n, >=3)")
+        finite = np.all(np.isfinite(boundary[:, :3]), axis=1)
+        if np.any(finite):
+            boundaries.append(boundary[finite, :3])
+    if not boundaries:
+        raise ValueError("result contains no finite cell-boundary xyz points")
+
+    points_xyz = np.vstack(boundaries)
+    points_xy_px = points_xyz[:, :2] / pixel_size
+    points_z = points_xyz[:, 2]
+
+    # Adjacent cells can contribute the same xy boundary point with slightly
+    # different z-values. Average exact duplicates before scattered interpolation.
+    points_xy_px, points_z = _average_duplicate_xy(points_xy_px, points_z)
+
+    if shape is None:
+        prepared = getattr(result, "prepared_heightmap", None)
+        if prepared is not None:
+            shape = np.asarray(prepared).shape
+        else:
+            max_x = float(np.nanmax(points_xy_px[:, 0]))
+            max_y = float(np.nanmax(points_xy_px[:, 1]))
+            shape = (int(np.ceil(max_y)) + 1, int(np.ceil(max_x)) + 1)
+    if len(shape) != 2 or int(shape[0]) <= 0 or int(shape[1]) <= 0:
+        raise ValueError("shape must be a positive (rows, columns) tuple")
+    height, width = int(shape[0]), int(shape[1])
+
+    yy, xx = np.mgrid[:height, :width]
+    grid_xy = np.column_stack([xx.ravel(), yy.ravel()])
+
+    interpolator = _boundary_interpolator(method, points_xy_px, points_z)
+    surface = np.asarray(interpolator(grid_xy), dtype=float).reshape(height, width)
+    missing = ~np.isfinite(surface)
+    if not np.any(missing):
+        return surface
+
+    if extrapolation == "none":
+        return surface
+    if extrapolation == "nearest":
+        nearest = NearestNDInterpolator(points_xy_px, points_z)
+        surface[missing] = nearest(grid_xy[missing.ravel()])
+        return surface
+    if extrapolation == "constant":
+        surface[missing] = np.nan if fill_value is None else float(fill_value)
+        return surface
+    if extrapolation == "linear":
+        plane_values = _linear_plane_extrapolate(points_xy_px, points_z, grid_xy)
+        surface[missing] = plane_values.reshape(height, width)[missing]
+        return surface
+    raise AssertionError("unreachable extrapolation branch")
+
+
 @dataclass
 class SurfaceDistanceCalculator:
     """
@@ -406,9 +542,11 @@ class SurfaceDistanceCalculator:
     Construction helpers
     --------------------
     Use :meth:`from_result` when a DeProjPy result is available; it infers
-    ``pixel_size``, ``voxel_depth``, and ``units`` from the result. Use
-    :meth:`from_heightmap` when working from an external height map or exported
-    cell-center coordinates.
+    ``pixel_size``, ``voxel_depth``, and ``units`` from the result while still
+    building the surface from a height map. Use :meth:`from_cell_boundaries`
+    when distances should follow an interpolated surface reconstructed from the
+    deprojected cell-boundary xyz points. Use :meth:`from_heightmap` when
+    working from an external height map or exported cell-center coordinates.
     """
 
     heightmap: np.ndarray
@@ -443,8 +581,46 @@ class SurfaceDistanceCalculator:
         """
         Build a calculator from a raw or already prepared height map.
 
-        If ``prepared=False``, :func:`deprojpy.heightmap.prepare_heightmap` is
-        applied and the stored height map is converted to physical z units.
+        Parameters
+        ----------
+        heightmap : np.ndarray
+            Two-dimensional height map indexed as ``heightmap[row=y, column=x]``.
+            If ``prepared=True``, values are used directly. If
+            ``prepared=False``, the map is passed through
+            :func:`deprojpy.heightmap.prepare_heightmap`.
+        pixel_size : float
+            Physical size of one pixel in the ``x`` and ``y`` directions.
+            Public point inputs remain ``(x, y)`` pixel coordinates; returned
+            distances are physical lengths.
+        voxel_depth : float, optional
+            Physical scale factor for raw height-map values. When
+            ``prepared=True``, this factor is applied during distance
+            calculations. When ``prepared=False``, it is consumed by
+            ``prepare_heightmap`` and the returned calculator stores
+            ``voxel_depth=1.0`` because its height map is already in physical
+            z units.
+        prepared : bool, optional
+            If ``True`` (default), assume ``heightmap`` is already the surface
+            used for distance calculations. If ``False``, run DeProjPy height-map
+            preprocessing first.
+        units : str, optional
+            Label for the physical distance units.
+        smooth_scale : float, optional
+            Gaussian smoothing scale passed to ``prepare_heightmap`` when
+            ``prepared=False``. Values ``<= 0`` disable smoothing.
+        invert_z : bool, optional
+            Whether to invert height values during preparation.
+        inpaint_zeros : bool, optional
+            Whether zero-valued regions are inpainted during preparation.
+        prune_zeros : bool, optional
+            Whether remaining zero-valued pixels become ``NaN`` during
+            preparation.
+
+        Returns
+        -------
+        SurfaceDistanceCalculator
+            Calculator whose stored ``heightmap`` is the actual surface used for
+            distance calculations.
         """
         pixel_size = _validate_positive(pixel_size, "pixel_size")
         voxel_depth = _validate_positive(voxel_depth, "voxel_depth")
@@ -482,13 +658,45 @@ class SurfaceDistanceCalculator:
         prune_zeros: bool = True,
     ) -> "SurfaceDistanceCalculator":
         """
-        Build a calculator using scale metadata from a DeProjPy result.
+        Build a height-map-based calculator using metadata from a result.
 
-        ``pixel_size``, ``voxel_depth``, and ``units`` default to values stored
-        on the result. When ``prepared=False``, ``heightmap`` is prepared using
-        DeProjPy's standard height-map preprocessing. If ``invert_z`` is not
-        supplied, it defaults to ``False`` because older result objects do not
-        record whether inversion was used.
+        This constructor still builds the surface from a height map. It does
+        not use deprojected cell-boundary points; use
+        :meth:`from_cell_boundaries` for that surface.
+
+        Parameters
+        ----------
+        result
+            DeProjPy result-like object. ``pixel_size``, ``voxel_depth``, and
+            ``units`` are inferred from this object unless explicitly supplied.
+            The result is also stored so pairwise methods can use cell centers
+            when ``points_xy`` is omitted.
+        heightmap : np.ndarray, optional
+            Raw or prepared height map. If omitted, ``result.prepared_heightmap``
+            is used and treated as prepared.
+        prepared : bool, optional
+            If ``True``, use ``heightmap`` directly. If ``False`` (default),
+            prepare the provided raw height map with DeProjPy preprocessing.
+        pixel_size : float, optional
+            Override ``result.pixel_size``.
+        voxel_depth : float, optional
+            Override ``result.voxel_depth``. Ignored after construction when
+            ``prepared=False`` because the stored height map is converted to
+            physical z units.
+        units : str, optional
+            Override ``result.units``.
+        invert_z : bool, optional
+            Whether to invert height values during preparation. If omitted,
+            defaults to ``False`` because current result objects do not record
+            the original inversion setting.
+        smooth_scale, inpaint_zeros, prune_zeros
+            Passed to ``prepare_heightmap`` when ``prepared=False``.
+
+        Returns
+        -------
+        SurfaceDistanceCalculator
+            Calculator with scale metadata inferred from ``result`` and a stored
+            height map ready for repeated distance calls.
         """
         if pixel_size is None:
             pixel_size = getattr(result, "pixel_size")
@@ -518,6 +726,75 @@ class SurfaceDistanceCalculator:
         )
         calc.result = result
         return calc
+
+    @classmethod
+    def from_cell_boundaries(
+        cls,
+        result,
+        *,
+        shape: tuple[int, int] | None = None,
+        method: str = "linear",
+        extrapolation: str = "nearest",
+        fill_value: float | None = None,
+        units: str | None = None,
+    ) -> "SurfaceDistanceCalculator":
+        """
+        Build a calculator from deprojected cell-boundary xyz points.
+
+        This constructor interpolates the physical z-values stored in
+        ``cell.boundary`` arrays back onto an image-like raster. It is useful
+        when distance calculations or path visualizations should follow the
+        fitted DeProj boundary surface rather than the original height map.
+
+        Parameters
+        ----------
+        result
+            DeProjPy result-like object with ``epicells`` and ``pixel_size``.
+            Each cell boundary is expected to have physical ``(x, y, z)``
+            columns. ``pixel_size`` converts boundary ``x/y`` coordinates back
+            to pixel coordinates before interpolation.
+        shape : tuple[int, int], optional
+            Output raster shape in array ``(rows, columns)`` order. If omitted,
+            ``result.prepared_heightmap.shape`` is preferred. If that is not
+            available, a minimal shape is inferred from boundary coordinates.
+        method : {"linear", "clough", "clough_tocher", "nearest"}, optional
+            Scattered interpolation method used inside the convex hull of
+            boundary points.
+        extrapolation : {"linear", "nearest", "constant", "none"}, optional
+            How to fill grid points outside the interpolator support. ``"linear"``
+            fits a least-squares plane to boundary points, ``"nearest"`` uses
+            nearest-neighbor values, ``"constant"`` uses ``fill_value``, and
+            ``"none"`` leaves missing values as ``NaN``.
+        fill_value : float, optional
+            Fill value used when ``extrapolation="constant"``.
+        units : str, optional
+            Override ``result.units`` for display. Calculations are unaffected.
+
+        Returns
+        -------
+        SurfaceDistanceCalculator
+            Calculator with ``pixel_size`` inferred from ``result``,
+            ``voxel_depth=1.0``, and a prepared raster surface in physical
+            z units.
+        """
+        pixel_size = _validate_positive(getattr(result, "pixel_size"), "result.pixel_size")
+        if units is None:
+            units = getattr(result, "units", "a.u.")
+        surface = heightmap_from_cell_boundaries(
+            result,
+            shape=shape,
+            method=method,
+            extrapolation=extrapolation,
+            fill_value=fill_value,
+        )
+        return cls(
+            heightmap=surface,
+            pixel_size=pixel_size,
+            voxel_depth=1.0,
+            units=units, # type: ignore (units is validated above)
+            prepared=True,
+            result=result,
+        )
 
     def sample_height(self, xy: np.ndarray) -> np.ndarray:
         """Sample this calculator's height map at ``(x, y)`` pixel coordinates."""
@@ -753,7 +1030,31 @@ class SurfaceGraph:
         target_nodes: int = 80_000,
         connectivity: str = "8",
     ) -> "SurfaceGraph":
-        """Build a sparse surface graph from a distance calculator."""
+        """
+        Build a sparse surface graph from a distance calculator.
+
+        Parameters
+        ----------
+        calculator : SurfaceDistanceCalculator
+            Calculator whose prepared height map and scale factors define the
+            surface. The graph uses ``calculator.heightmap``,
+            ``calculator.pixel_size``, and ``calculator.voxel_depth``.
+        step : int or "auto", optional
+            Grid sampling step in pixels. ``1`` includes every pixel.
+            ``"auto"`` chooses a step with :func:`choose_surface_graph_step`
+            using ``target_nodes``.
+        target_nodes : int, optional
+            Approximate maximum node count used when ``step="auto"``.
+        connectivity : {"4", "8", "16"}, optional
+            Edge stencil. ``"4"`` is most grid-biased, ``"8"`` is the default,
+            and ``"16"`` reduces directional bias at higher cost.
+
+        Returns
+        -------
+        SurfaceGraph
+            Sparse graph whose distances are in ``calculator.units``-compatible
+            physical units.
+        """
         return build_surface_graph(
             calculator.heightmap,
             pixel_size=calculator.pixel_size,
@@ -774,7 +1075,34 @@ class SurfaceGraph:
         target_nodes: int = 80_000,
         connectivity: str = "8",
     ) -> "SurfaceGraph":
-        """Build a sparse surface graph directly from a height map."""
+        """
+        Build a sparse surface graph directly from a height map.
+
+        Parameters
+        ----------
+        heightmap : np.ndarray
+            Two-dimensional surface raster indexed as
+            ``heightmap[row=y, column=x]``. Values are multiplied by
+            ``voxel_depth`` when edge weights are constructed.
+        pixel_size : float
+            Physical size of one pixel in the ``x`` and ``y`` directions.
+        voxel_depth : float, optional
+            Physical scale factor for height values. Use ``1.0`` for height maps
+            already in physical z units.
+        step : int or "auto", optional
+            Grid sampling step in pixels. Larger values create coarser, faster,
+            more approximate graphs. ``"auto"`` uses ``target_nodes`` to choose
+            a step.
+        target_nodes : int, optional
+            Approximate maximum node count used when ``step="auto"``.
+        connectivity : {"4", "8", "16"}, optional
+            Edge stencil used to connect sampled grid nodes.
+
+        Returns
+        -------
+        SurfaceGraph
+            Sparse graph suitable for approximate geodesic distance queries.
+        """
         return build_surface_graph(
             heightmap,
             pixel_size=pixel_size,
