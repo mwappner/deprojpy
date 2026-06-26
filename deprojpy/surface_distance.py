@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import warnings
 from dataclasses import dataclass, field
+from typing import Literal
 
 import numpy as np
 from numba import njit, prange
@@ -38,6 +39,21 @@ def _validate_positive(value: float, name: str) -> float:
     if not np.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be a positive finite number")
     return value
+
+
+def _as_pixel_xy(
+    xy: np.ndarray,
+    *,
+    pixel_size: float,
+    input_units: Literal["pixel", "physical"] = "pixel",
+) -> np.ndarray:
+    """Return xy coordinates in pixel units."""
+    points = np.asarray(xy, dtype=float)
+    if input_units == "pixel":
+        return points
+    if input_units == "physical":
+        return points / _validate_positive(pixel_size, "pixel_size")
+    raise ValueError("input_units must be 'pixel' or 'physical'")
 
 
 def sample_height_at_xy(
@@ -248,6 +264,7 @@ def surface_straight_distance(
     min_samples: int = 16,
     max_samples: int = 2048,
     order: int = 1,
+    input_units: Literal["pixel", "physical"] = "pixel",
 ) -> float:
     """
     Approximate surface distance along the straight segment in ``xy``.
@@ -258,7 +275,7 @@ def surface_straight_distance(
         2-D height map. Values are multiplied by ``voxel_depth`` before distance
         accumulation.
     p0_xy, p1_xy : np.ndarray
-        Endpoints in ``(x, y)`` pixel coordinates.
+        Endpoints in ``(x, y)`` order.
     pixel_size : float, optional
         Physical size of one pixel in the ``x`` and ``y`` directions.
     voxel_depth : float, optional
@@ -272,6 +289,11 @@ def surface_straight_distance(
         Bounds for automatically chosen sample counts.
     order : int, optional
         Interpolation order. The optimized path supports ``order=1``.
+    input_units : {"pixel", "physical"}, optional
+        Coordinate system of input xy points. Use "pixel" when points are in image
+        pixel coordinates, with x as column and y as row. Use "physical" when xy
+        points are in the same physical units as result boundaries and centers.
+        Distances are always returned in physical units.
 
     Returns
     -------
@@ -281,10 +303,16 @@ def surface_straight_distance(
     h = np.asarray(heightmap, dtype=np.float64)
     if h.ndim != 2:
         raise ValueError("heightmap must be a 2-D array")
-    p0 = _validate_xy_point(p0_xy, name="p0_xy")
-    p1 = _validate_xy_point(p1_xy, name="p1_xy")
     pixel_size = _validate_positive(pixel_size, "pixel_size")
     voxel_depth = _validate_positive(voxel_depth, "voxel_depth")
+    p0 = _validate_xy_point(
+        _as_pixel_xy(p0_xy, pixel_size=pixel_size, input_units=input_units),
+        name="p0_xy",
+    )
+    p1 = _validate_xy_point(
+        _as_pixel_xy(p1_xy, pixel_size=pixel_size, input_units=input_units),
+        name="p1_xy",
+    )
     if n_samples is None:
         n_samples = _auto_n_samples(
             p0,
@@ -485,7 +513,7 @@ class SurfaceDistanceCalculator:
     heightmap : np.ndarray
         Two-dimensional height map. Arrays are indexed in image order as
         ``heightmap[row=y, column=x]``. Public point inputs to calculator
-        methods are always geometric ``(x, y)`` pixel coordinates.
+        methods are geometric ``(x, y)`` coordinates.
     pixel_size : float
         Physical size of one pixel in the ``x`` and ``y`` directions. If
         ``units="µm"``, for example, distances returned by the calculator are
@@ -511,11 +539,12 @@ class SurfaceDistanceCalculator:
 
     Coordinate and unit conventions
     -------------------------------
-    All point arguments accepted by public methods are ``(x, y)`` pixel
-    coordinates, not physical coordinates and not array ``(row, column)``
-    indices. Cell centers stored in :class:`deprojpy.models.Epicell` are already
-    physical ``(x, y, z)`` coordinates; use :func:`cell_centers_xy_pixels` or
-    :meth:`from_result` to convert them consistently.
+    Public xy inputs use image pixel coordinates by default, with ``x`` as
+    column and ``y`` as row. Pass ``input_units="physical"`` when points are in
+    the same physical units as result boundaries and centers. Cell centers
+    stored in :class:`deprojpy.models.Epicell` are physical ``(x, y, z)``
+    coordinates; use :func:`cell_centers_xy_pixels` for pixel-coordinate center
+    arrays.
 
     Methods return physical distances. In the ``x`` and ``y`` directions,
     pixel-coordinate differences are multiplied by ``pixel_size``. In the
@@ -524,9 +553,9 @@ class SurfaceDistanceCalculator:
 
     Main methods
     ------------
-    ``sample_height(xy)``
-        Bilinearly sample the calculator's height map at ``(x, y)`` pixel
-        coordinates and return physical z values.
+    ``sample_height(xy, input_units="pixel")``
+        Bilinearly sample the calculator's height map at ``(x, y)`` coordinates
+        and return physical z values.
     ``straight_distance(p0_xy, p1_xy, ...)``
         Follow the straight segment between two ``xy`` points, lift it onto the
         surface, and return the 3-D polyline length. This is useful and fast,
@@ -538,6 +567,15 @@ class SurfaceDistanceCalculator:
     ``straight_distances_for_pairs(points_xy, pairs, ...)``
         Compute distances only for selected index pairs, where ``pairs`` has
         shape ``(n_pairs, 2)`` and indexes rows of ``points_xy``.
+
+    Coordinate and unit conventions
+    -------------------------------
+    Public xy inputs use image pixel coordinates by default, with ``x`` as
+    column and ``y`` as row. Pass ``input_units="physical"`` when points are in
+    the same physical units as result boundaries and centers. Internally, all
+    sampling still occurs in pixel coordinates. Distances are always returned in
+    physical units using ``pixel_size`` for ``x/y`` and ``voxel_depth`` for
+    height differences.
 
     Construction helpers
     --------------------
@@ -796,24 +834,79 @@ class SurfaceDistanceCalculator:
             result=result,
         )
 
-    def sample_height(self, xy: np.ndarray) -> np.ndarray:
-        """Sample this calculator's height map at ``(x, y)`` pixel coordinates."""
-        return sample_height_at_xy(self.heightmap, xy, order=1, mode="nearest") * self.voxel_depth
+    def sample_height(
+        self,
+        xy: np.ndarray,
+        *,
+        input_units: Literal["pixel", "physical"] = "pixel",
+    ) -> np.ndarray:
+        """
+        Sample this calculator's height map at ``(x, y)`` coordinates.
 
-    def straight_distance(self, p0_xy, p1_xy, **kwargs) -> float:
-        """Return straight-line surface distance between two ``(x, y)`` points."""
+        Parameters
+        ----------
+        xy : np.ndarray
+            Coordinates with shape ``(n, 2)`` in ``(x, y)`` order.
+        input_units : {"pixel", "physical"}, optional
+            Coordinate system of input xy points. Use "pixel" when points are in image
+            pixel coordinates, with x as column and y as row. Use "physical" when xy
+            points are in the same physical units as result boundaries and centers.
+            Distances are always returned in physical units.
+
+        Returns
+        -------
+        np.ndarray
+            Sampled z values in physical units.
+        """
+        points = _as_pixel_xy(xy, pixel_size=self.pixel_size, input_units=input_units)
+        return sample_height_at_xy(self.heightmap, points, order=1, mode="nearest") * self.voxel_depth
+
+    def straight_distance(
+        self,
+        p0_xy,
+        p1_xy,
+        *,
+        input_units: Literal["pixel", "physical"] = "pixel",
+        **kwargs,
+    ) -> float:
+        """
+        Return straight-line surface distance between two ``(x, y)`` points.
+
+        Parameters
+        ----------
+        p0_xy, p1_xy
+            Endpoints in ``(x, y)`` order.
+        input_units : {"pixel", "physical"}, optional
+            Coordinate system of input xy points. Use "pixel" when points are in image
+            pixel coordinates, with x as column and y as row. Use "physical" when xy
+            points are in the same physical units as result boundaries and centers.
+            Distances are always returned in physical units.
+
+        Returns
+        -------
+        float
+            Straight-line surface distance in physical units.
+        """
         return surface_straight_distance(
             self.heightmap,
             p0_xy,
             p1_xy,
             pixel_size=self.pixel_size,
             voxel_depth=self.voxel_depth,
+            input_units=input_units,
             **kwargs,
         )
 
-    def _resolve_points(self, points_xy: np.ndarray | None, result=None) -> np.ndarray:
+    def _resolve_points(
+        self,
+        points_xy: np.ndarray | None,
+        result=None,
+        *,
+        input_units: Literal["pixel", "physical"] = "pixel",
+    ) -> np.ndarray:
         if points_xy is not None:
-            return _validate_xy_array(points_xy, name="points_xy")
+            points = _as_pixel_xy(points_xy, pixel_size=self.pixel_size, input_units=input_units)
+            return _validate_xy_array(points, name="points_xy")
         result = result if result is not None else self.result
         if result is None:
             raise ValueError("points_xy is required unless a result is available")
@@ -830,15 +923,27 @@ class SurfaceDistanceCalculator:
         max_samples: int = 2048,
         block_size: int | None = None,
         show_progress: bool | None = None,
+        input_units: Literal["pixel", "physical"] = "pixel",
     ) -> np.ndarray:
         """
         Return an ``N × N`` matrix of straight-line surface distances.
 
         The implementation computes only the upper triangle and mirrors it to
-        the lower triangle.
+        the lower triangle. If ``points_xy`` is omitted, points are pulled from
+        the stored result and converted to pixel coordinates automatically.
+
+        Parameters
+        ----------
+        points_xy : np.ndarray, optional
+            Coordinates with shape ``(n, 2)`` in ``(x, y)`` order.
+        input_units : {"pixel", "physical"}, optional
+            Coordinate system of input xy points. Use "pixel" when points are in image
+            pixel coordinates, with x as column and y as row. Use "physical" when xy
+            points are in the same physical units as result boundaries and centers.
+            Distances are always returned in physical units.
         """
         del block_size, show_progress
-        points = self._resolve_points(points_xy, result=result)
+        points = self._resolve_points(points_xy, result=result, input_units=input_units)
         if len(points) > 2000:
             warnings.warn(
                 "straight_pairwise_distances computes an N x N matrix and may "
@@ -867,9 +972,28 @@ class SurfaceDistanceCalculator:
         samples_per_pixel: float = 2.0,
         min_samples: int = 16,
         max_samples: int = 2048,
+        input_units: Literal["pixel", "physical"] = "pixel",
     ) -> np.ndarray:
-        """Compute straight-line surface distances for selected point pairs."""
-        points = _validate_xy_array(points_xy, name="points_xy")
+        """
+        Compute straight-line surface distances for selected point pairs.
+
+        Parameters
+        ----------
+        points_xy : np.ndarray
+            Coordinates with shape ``(n, 2)`` in ``(x, y)`` order.
+        pairs : np.ndarray
+            Integer array with shape ``(n_pairs, 2)`` indexing rows of
+            ``points_xy``.
+        input_units : {"pixel", "physical"}, optional
+            Coordinate system of input xy points. Use "pixel" when points are in image
+            pixel coordinates, with x as column and y as row. Use "physical" when xy
+            points are in the same physical units as result boundaries and centers.
+            Distances are always returned in physical units.
+        """
+        points = _validate_xy_array(
+            _as_pixel_xy(points_xy, pixel_size=self.pixel_size, input_units=input_units),
+            name="points_xy",
+        )
         pair_array = np.asarray(pairs, dtype=np.int64)
         if pair_array.ndim != 2 or pair_array.shape[1] != 2:
             raise ValueError("pairs must have shape (n_pairs, 2)")
@@ -985,12 +1109,14 @@ class SurfaceGraph:
 
     Coordinate and unit conventions
     -------------------------------
-    Public methods accept ``(x, y)`` pixel coordinates. Input points are snapped
-    to their nearest graph nodes before Dijkstra searches. Returned distances
-    are physical lengths using ``pixel_size`` for ``x/y`` and ``voxel_depth`` for
-    height differences as encoded in the graph edge weights. Returned paths are
-    arrays of ``(x, y)`` pixel coordinates along graph nodes, not physical
-    coordinates.
+    Public methods accept ``(x, y)`` pixel coordinates by default, with ``x`` as
+    column and ``y`` as row. Pass ``input_units="physical"`` when points are in
+    the same physical units as result boundaries and centers. Input points are
+    converted to pixel units and snapped to their nearest graph nodes before
+    Dijkstra searches. Returned distances are physical lengths using
+    ``pixel_size`` for ``x/y`` and ``voxel_depth`` for height differences as
+    encoded in the graph edge weights. Returned paths are arrays of ``(x, y)``
+    pixel coordinates along graph nodes, not physical coordinates.
 
     Construction helpers
     --------------------
@@ -1112,21 +1238,70 @@ class SurfaceGraph:
             connectivity=connectivity,
         )
 
-    def nearest_nodes(self, points_xy: np.ndarray) -> np.ndarray:
-        """Return nearest graph node indices for ``(x, y)`` points."""
-        points = _validate_xy_array(points_xy, name="points_xy")
+    def nearest_nodes(
+        self,
+        points_xy: np.ndarray,
+        *,
+        input_units: Literal["pixel", "physical"] = "pixel",
+    ) -> np.ndarray:
+        """
+        Return nearest graph node indices for ``(x, y)`` points.
+
+        Parameters
+        ----------
+        points_xy : np.ndarray
+            Coordinates with shape ``(n, 2)`` in ``(x, y)`` order.
+        input_units : {"pixel", "physical"}, optional
+            Coordinate system of input xy points. Use "pixel" when points are in image
+            pixel coordinates, with x as column and y as row. Use "physical" when xy
+            points are in the same physical units as result boundaries and centers.
+            Distances are always returned in physical units.
+        """
+        points = _validate_xy_array(
+            _as_pixel_xy(points_xy, pixel_size=self.pixel_size, input_units=input_units),
+            name="points_xy",
+        )
         _, indices = self._tree.query(points)
         return np.asarray(indices, dtype=np.int64)
 
-    def distance(self, p0_xy, p1_xy, *, return_path: bool = False):
-        """Return approximate graph-geodesic distance between two points."""
+    def distance(
+        self,
+        p0_xy,
+        p1_xy,
+        *,
+        return_path: bool = False,
+        input_units: Literal["pixel", "physical"] = "pixel",
+    ):
+        """
+        Return approximate graph-geodesic distance between two points.
+
+        Parameters
+        ----------
+        p0_xy, p1_xy
+            Endpoints in ``(x, y)`` order.
+        return_path : bool, optional
+            If ``True``, also return the shortest graph path. The returned path
+            xy coordinates are in pixel units matching graph node coordinates,
+            even when ``input_units="physical"``.
+        input_units : {"pixel", "physical"}, optional
+            Coordinate system of input xy points. Use "pixel" when points are in image
+            pixel coordinates, with x as column and y as row. Use "physical" when xy
+            points are in the same physical units as result boundaries and centers.
+            Distances are always returned in physical units.
+        """
         endpoints = np.vstack(
             [
-                _validate_xy_point(p0_xy, name="p0_xy"),
-                _validate_xy_point(p1_xy, name="p1_xy"),
+                _validate_xy_point(
+                    _as_pixel_xy(p0_xy, pixel_size=self.pixel_size, input_units=input_units),
+                    name="p0_xy",
+                ),
+                _validate_xy_point(
+                    _as_pixel_xy(p1_xy, pixel_size=self.pixel_size, input_units=input_units),
+                    name="p1_xy",
+                ),
             ]
         )
-        source, target = self.nearest_nodes(endpoints)
+        source, target = self.nearest_nodes(endpoints, input_units="pixel")
         if return_path:
             dist, predecessors = dijkstra(
                 self.graph,
@@ -1142,22 +1317,42 @@ class SurfaceGraph:
 
     def distances_from_source(
         self,
-        source_xy_px,
-        target_xy_px: np.ndarray | None = None,
+        source_xy,
+        target_xy: np.ndarray | None = None,
+        *,
+        input_units: Literal["pixel", "physical"] = "pixel",
     ) -> np.ndarray:
         """
-        Return graph-geodesic distances from one source to targets. 
+        Return graph-geodesic distances from one source to targets.
 
-        xy coordinates are in pixel units.
+        Parameters
+        ----------
+        source_xy
+            Source coordinate in ``(x, y)`` order.
+        target_xy : np.ndarray, optional
+            Target coordinates with shape ``(n, 2)`` in ``(x, y)`` order. If
+            omitted, distances to every graph node are returned.
+        input_units : {"pixel", "physical"}, optional
+            Coordinate system of input xy points. Use "pixel" when points are in image
+            pixel coordinates, with x as column and y as row. Use "physical" when xy
+            points are in the same physical units as result boundaries and centers.
+            Distances are always returned in physical units.
 
-        If ``target_xy_px`` is omitted, distances to every graph node are returned.
-        Otherwise, targets are snapped to their nearest graph nodes.
+        Returns
+        -------
+        np.ndarray
+            Graph-geodesic distances in physical units. Input points are snapped
+            to their nearest graph nodes.
         """
-        source = int(self.nearest_nodes(np.asarray([_validate_xy_point(source_xy_px)]))[0])
+        source_point = _validate_xy_point(
+            _as_pixel_xy(source_xy, pixel_size=self.pixel_size, input_units=input_units),
+            name="source_xy",
+        )
+        source = int(self.nearest_nodes(np.asarray([source_point]), input_units="pixel")[0])
         dist = np.asarray(dijkstra(self.graph, directed=False, indices=source), dtype=float)
-        if target_xy_px is None:
+        if target_xy is None:
             return dist
-        targets = self.nearest_nodes(target_xy_px)
+        targets = self.nearest_nodes(target_xy, input_units=input_units)
         return dist[targets]
 
     def _path_from_predecessors(

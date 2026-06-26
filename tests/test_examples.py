@@ -63,4 +63,6 @@ def test_script_examples_can_be_called_from_python(tmp_path, deproj_samples):
     )
     assert surface_output["path_plot"].is_file()
     assert surface_output["pairwise"].shape[0] <= 100
-    assert surface_output["distances"]["straight_surface"] > 0
+    assert surface_output["distances"]["heightmap_straight_surface"] > 0
+    assert surface_output["distances"]["boundary_straight_surface_pixel_input"] > 0
+    assert surface_output["distances"]["boundary_graph_geodesic"] > 0

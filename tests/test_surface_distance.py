@@ -8,6 +8,7 @@ from deprojpy.models import Epicell
 from deprojpy.surface_distance import (
     SurfaceDistanceCalculator,
     SurfaceGraph,
+    _as_pixel_xy,
     _average_duplicate_xy,
     _bilinear_sample,
     cell_centers_xy_pixels,
@@ -16,6 +17,14 @@ from deprojpy.surface_distance import (
     sample_height_at_xy,
     surface_straight_distance,
 )
+
+
+def test_as_pixel_xy_converts_physical_coordinates_and_rejects_invalid_units():
+    xy = np.array([[2.0, 4.0], [6.0, 8.0]])
+    assert np.allclose(_as_pixel_xy(xy, pixel_size=2.0, input_units="pixel"), xy)
+    assert np.allclose(_as_pixel_xy(xy, pixel_size=2.0, input_units="physical"), xy / 2.0)
+    with np.testing.assert_raises_regex(ValueError, "input_units must be 'pixel' or 'physical'"):
+        _as_pixel_xy(xy, pixel_size=2.0, input_units="micron")  # type: ignore[arg-type]
 
 
 def test_flat_surface_straight_distance_equals_2d_distance():
@@ -68,6 +77,41 @@ def test_pairwise_distance_matrix_matches_individual_calls():
         assert np.isclose(matrix[i, j], expected)
 
 
+def test_straight_distance_accepts_pixel_and_physical_inputs():
+    y, x = np.mgrid[:20, :20]
+    calc = SurfaceDistanceCalculator((0.1 * x + 0.2 * y).astype(float), pixel_size=0.5)
+    p0_px = np.array([2.0, 3.0])
+    p1_px = np.array([12.0, 9.0])
+    p0_phys = p0_px * calc.pixel_size
+    p1_phys = p1_px * calc.pixel_size
+
+    pixel_distance = calc.straight_distance(p0_px, p1_px, input_units="pixel", n_samples=48)
+    physical_distance = calc.straight_distance(
+        p0_phys,
+        p1_phys,
+        input_units="physical",
+        n_samples=48,
+    )
+
+    assert np.isclose(pixel_distance, physical_distance)
+
+
+def test_pairwise_distance_accepts_pixel_and_physical_inputs():
+    y, x = np.mgrid[:20, :20]
+    calc = SurfaceDistanceCalculator((0.1 * x + 0.2 * y).astype(float), pixel_size=0.25)
+    points_px = np.array([[1, 1], [4, 1], [4, 5], [8, 6]], dtype=float)
+    points_phys = points_px * calc.pixel_size
+
+    pixel_matrix = calc.straight_pairwise_distances(points_px, input_units="pixel", n_samples=32)
+    physical_matrix = calc.straight_pairwise_distances(
+        points_phys,
+        input_units="physical",
+        n_samples=32,
+    )
+
+    assert np.allclose(pixel_matrix, physical_matrix)
+
+
 def test_selected_pair_distances_match_individual_calls():
     heightmap = np.zeros((8, 8), dtype=float)
     calc = SurfaceDistanceCalculator(heightmap, pixel_size=1.0)
@@ -85,6 +129,29 @@ def test_selected_pair_distances_match_individual_calls():
     )
 
 
+def test_selected_pair_distances_accept_pixel_and_physical_inputs():
+    heightmap = np.zeros((10, 10), dtype=float)
+    calc = SurfaceDistanceCalculator(heightmap, pixel_size=0.5)
+    points_px = np.array([[0, 0], [3, 4], [7, 7]], dtype=float)
+    points_phys = points_px * calc.pixel_size
+    pairs = np.array([[0, 1], [1, 2]])
+
+    pixel_distances = calc.straight_distances_for_pairs(
+        points_px,
+        pairs,
+        input_units="pixel",
+        n_samples=16,
+    )
+    physical_distances = calc.straight_distances_for_pairs(
+        points_phys,
+        pairs,
+        input_units="physical",
+        n_samples=16,
+    )
+
+    assert np.allclose(pixel_distances, physical_distances)
+
+
 def test_surface_graph_flat_8_connectivity_is_exact_for_diagonal():
     graph = SurfaceGraph.from_heightmap(
         np.zeros((6, 6), dtype=float),
@@ -94,6 +161,24 @@ def test_surface_graph_flat_8_connectivity_is_exact_for_diagonal():
     )
     distance = graph.distance(np.array([0, 0]), np.array([5, 5]))
     assert np.isclose(distance, 5 * np.sqrt(2))
+
+
+def test_surface_graph_distance_accepts_pixel_and_physical_inputs():
+    graph = SurfaceGraph.from_heightmap(
+        np.zeros((8, 8), dtype=float),
+        pixel_size=0.5,
+        connectivity="8",
+        step=1,
+    )
+    p0_px = np.array([0.0, 0.0])
+    p1_px = np.array([5.0, 5.0])
+    p0_phys = p0_px * graph.pixel_size
+    p1_phys = p1_px * graph.pixel_size
+
+    pixel_distance = graph.distance(p0_px, p1_px, input_units="pixel")
+    physical_distance = graph.distance(p0_phys, p1_phys, input_units="physical")
+
+    assert np.isclose(pixel_distance, physical_distance)
 
 
 def test_surface_graph_flat_4_connectivity_is_manhattan_like():
@@ -151,6 +236,31 @@ def test_surface_graph_distance_return_path():
     assert np.allclose(path[-1], [5, 5])
 
 
+def test_surface_graph_path_remains_pixel_units_for_physical_input():
+    graph = SurfaceGraph.from_heightmap(
+        np.zeros((8, 8), dtype=float),
+        pixel_size=0.5,
+        connectivity="8",
+        step=1,
+    )
+    p0_px = np.array([0.0, 0.0])
+    p1_px = np.array([5.0, 5.0])
+    p0_phys = p0_px * graph.pixel_size
+    p1_phys = p1_px * graph.pixel_size
+
+    distance, path = graph.distance(
+        p0_phys,
+        p1_phys,
+        input_units="physical",
+        return_path=True,
+    )
+
+    assert np.isfinite(distance)
+    assert np.allclose(path[0], p0_px)
+    assert np.allclose(path[-1], p1_px)
+    assert not np.allclose(path[-1], p1_phys)
+
+
 def test_surface_graph_distances_from_source_matches_individual_calls():
     graph = SurfaceGraph.from_heightmap(
         np.zeros((8, 8), dtype=float),
@@ -163,6 +273,28 @@ def test_surface_graph_distances_from_source_matches_individual_calls():
     distances = graph.distances_from_source(source, targets)
     expected = np.array([graph.distance(source, target) for target in targets])
     assert np.allclose(distances, expected)
+
+
+def test_surface_graph_distances_from_source_accepts_pixel_and_physical_inputs():
+    graph = SurfaceGraph.from_heightmap(
+        np.zeros((8, 8), dtype=float),
+        pixel_size=0.5,
+        connectivity="8",
+        step=1,
+    )
+    source_px = np.array([0.0, 0.0])
+    targets_px = np.array([[3.0, 0.0], [3.0, 3.0], [5.0, 2.0]])
+    source_phys = source_px * graph.pixel_size
+    targets_phys = targets_px * graph.pixel_size
+
+    pixel_distances = graph.distances_from_source(source_px, targets_px, input_units="pixel")
+    physical_distances = graph.distances_from_source(
+        source_phys,
+        targets_phys,
+        input_units="physical",
+    )
+
+    assert np.allclose(pixel_distances, physical_distances)
 
 
 def _cell(center, boundary=None):

@@ -110,10 +110,16 @@ calc = SurfaceDistanceCalculator.from_result(
     prepared=False,
     invert_z=True,
 )
+boundary_calc = SurfaceDistanceCalculator.from_cell_boundaries(
+    result,
+    method="linear",
+    extrapolation="linear",
+)
 centers = cell_centers_xy_pixels(result)
 
-d_straight = calc.straight_distance(centers[10], centers[200])
-graph = SurfaceGraph.from_calculator(calc, step="auto", connectivity="16")
+d_heightmap = calc.straight_distance(centers[10], centers[200])
+d_boundary = boundary_calc.straight_distance(centers[10], centers[200])
+graph = SurfaceGraph.from_calculator(boundary_calc, step="auto", connectivity="16")
 d_graph, path_xy = graph.distance(centers[10], centers[200], return_path=True)
 D = calc.straight_pairwise_distances(centers[:100])
 ```
@@ -124,8 +130,9 @@ surface is still built from a height map. Use
 `SurfaceDistanceCalculator.from_cell_boundaries(result)` when path
 visualization or distance calculations should follow a raster surface
 interpolated from the deprojected cell-boundary `(x, y, z)` points instead of
-the original height map. If you only have exported cell centers or external
-point arrays, use
+the original height map; `method` controls the scattered interpolation and
+`extrapolation` controls how pixels outside the boundary-point convex hull are
+filled. If you only have exported cell centers or external point arrays, use
 `SurfaceDistanceCalculator.from_heightmap(...)` and pass `pixel_size` and
 `voxel_depth` manually. All-pairs graph geodesics are intentionally not computed
 by default; use `SurfaceGraph.distances_from_source(...)` when comparing one

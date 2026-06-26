@@ -169,23 +169,31 @@ calc = SurfaceDistanceCalculator.from_result(
     prepared=False,
     invert_z=True,
 )
+boundary_calc = SurfaceDistanceCalculator.from_cell_boundaries(
+    result,
+    method="linear",
+    extrapolation="linear",
+)
 centers = cell_centers_xy_pixels(result)
 
 i, j = 10, 200
 p0, p1 = centers[i], centers[j]
 
 d_xy = np.linalg.norm((p1 - p0) * result.pixel_size)
-d_straight = calc.straight_distance(p0, p1)
+d_heightmap = calc.straight_distance(p0, p1)
+d_boundary = boundary_calc.straight_distance(p0, p1)
 
-graph = SurfaceGraph.from_calculator(calc, step="auto", connectivity="16")
+graph = SurfaceGraph.from_calculator(boundary_calc, step="auto", connectivity="16")
 d_graph, path_xy = graph.distance(p0, p1, return_path=True)
+path_z = boundary_calc.sample_height(path_xy)
 
 subset = centers[:100]
 D = calc.straight_pairwise_distances(subset)
 
 print(f"2D xy distance:                 {d_xy:.3f} {calc.units}")
-print(f"Straight-line surface distance: {d_straight:.3f} {calc.units}")
-print(f"Graph-geodesic distance:        {d_graph:.3f} {calc.units}")
+print(f"Heightmap surface distance:     {d_heightmap:.3f} {calc.units}")
+print(f"Boundary surface distance:      {d_boundary:.3f} {boundary_calc.units}")
+print(f"Graph-geodesic distance:        {d_graph:.3f} {boundary_calc.units}")
 print(f"Pairwise matrix shape:          {D.shape}")
 ```
 
@@ -196,6 +204,11 @@ the already deprojected cell-boundary `(x, y, z)` points, use:
 ```python
 calc = SurfaceDistanceCalculator.from_cell_boundaries(result)
 ```
+
+When plotting a graph path against deprojected cell contours, sample the path
+height from the same boundary-derived calculator, as in `path_z =
+boundary_calc.sample_height(path_xy)`, so the visualization and distance model
+refer to the same fitted surface.
 
 Run `python examples/05_surface_distances.py` for a complete script that also
 plots the straight segment and graph shortest path.
